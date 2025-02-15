@@ -70,7 +70,8 @@ class OdooFlow {
         add_action('admin_enqueue_scripts', array($this, 'enqueue_admin_scripts'));
         add_action('wp_ajax_refresh_odoo_databases', array($this, 'ajax_refresh_odoo_databases'));
         add_action('wp_ajax_list_odoo_modules', array($this, 'ajax_list_odoo_modules'));
-        add_action('wp_ajax_get_odoo_products_count', array($this, 'ajax_get_odoo_products_count'));
+        add_action('wp_ajax_get_odoo_products_count', array($this, 'ajax_get_odoo_products'));
+        add_action('wp_ajax_import_selected_products', array($this, 'ajax_import_selected_products'));
         add_action('manage_posts_extra_tablenav', array($this, 'add_odoo_count_button'), 20);
     }
 
@@ -607,18 +608,45 @@ class OdooFlow {
 
         ?>
         <div class="alignleft actions">
-            <button type="button" class="button-secondary get-odoo-products-count">
-                <?php _e('Get Odoo Products Count', 'odooflow'); ?>
+            <button type="button" class="button-secondary get-odoo-products">
+                <?php _e('Get Odoo Products', 'odooflow'); ?>
             </button>
-            <span class="odoo-products-count-result"></span>
+        </div>
+
+        <!-- Modal for product selection -->
+        <div id="odoo-products-modal" class="odoo-modal" style="display: none;">
+            <div class="odoo-modal-content">
+                <div class="odoo-modal-header">
+                    <h2><?php _e('Select Products to Import', 'odooflow'); ?></h2>
+                    <span class="odoo-modal-close">&times;</span>
+                </div>
+                <div class="odoo-modal-body">
+                    <div class="odoo-products-list">
+                        <!-- Products will be loaded here -->
+                    </div>
+                </div>
+                <div class="odoo-modal-footer">
+                    <div class="selection-controls">
+                        <button type="button" class="button select-all-products">
+                            <?php _e('Select All', 'odooflow'); ?>
+                        </button>
+                        <button type="button" class="button deselect-all-products">
+                            <?php _e('Deselect All', 'odooflow'); ?>
+                        </button>
+                    </div>
+                    <button type="button" class="button-primary import-selected-products">
+                        <?php _e('Import Selected Products', 'odooflow'); ?>
+                    </button>
+                </div>
+            </div>
         </div>
         <?php
     }
 
     /**
-     * AJAX handler for getting Odoo products count
+     * AJAX handler for getting Odoo products
      */
-    public function ajax_get_odoo_products_count() {
+    public function ajax_get_odoo_products() {
         check_ajax_referer('odooflow_refresh_databases', 'nonce');
 
         $odoo_url = get_option('odooflow_odoo_url', '');
@@ -670,50 +698,372 @@ class OdooFlow {
             return;
         }
 
-        // Get the count of all products in Odoo using product.product model
-        $count_request = xmlrpc_encode_request('execute_kw', array(
+        // Get products from Odoo with name, internal reference, and price
+        $products_request = xmlrpc_encode_request('execute_kw', array(
             $database,
             $uid,
             $api_key,
-            'product.product',  // Changed from product.template to product.product
-            'search_count',
+            'product.product',
+            'search_read',
             array(
                 array(
-                    array('active', '=', true)  // Only count active products
+                    array('active', '=', true)
                 )
+            ),
+            array(
+                'fields' => array('name', 'default_code', 'list_price', 'id'),
+                'order' => 'name ASC'
             )
         ));
 
-        $count_response = wp_remote_post(rtrim($odoo_url, '/') . '/xmlrpc/2/object', [
-            'body' => $count_request,
+        $products_response = wp_remote_post(rtrim($odoo_url, '/') . '/xmlrpc/2/object', [
+            'body' => $products_request,
             'headers' => ['Content-Type' => 'text/xml'],
             'timeout' => 30,
             'sslverify' => false
         ]);
 
-        if (is_wp_error($count_response)) {
-            wp_send_json_error(array('message' => __('Error fetching product count.', 'odooflow')));
+        if (is_wp_error($products_response)) {
+            wp_send_json_error(array('message' => __('Error fetching products.', 'odooflow')));
             return;
         }
 
-        $count_body = wp_remote_retrieve_body($count_response);
-        $count_xml = simplexml_load_string($count_body);
-        if ($count_xml === false) {
-            wp_send_json_error(array('message' => __('Error parsing product count response.', 'odooflow')));
+        $products_body = wp_remote_retrieve_body($products_response);
+        $products_xml = simplexml_load_string($products_body);
+        if ($products_xml === false) {
+            wp_send_json_error(array('message' => __('Error parsing products response.', 'odooflow')));
             return;
         }
 
-        $count_data = json_decode(json_encode($count_xml), true);
-        if (isset($count_data['fault'])) {
-            wp_send_json_error(array('message' => __('Error retrieving product count: ', 'odooflow') . $count_data['fault']['value']['struct']['member'][1]['value']['string']));
+        $products_data = json_decode(json_encode($products_xml), true);
+        if (isset($products_data['fault'])) {
+            wp_send_json_error(array('message' => __('Error retrieving products: ', 'odooflow') . $products_data['fault']['value']['struct']['member'][1]['value']['string']));
             return;
         }
 
-        $product_count = $count_data['params']['param']['value']['int'] ?? 0;
+        // Build the HTML for the products list
+        $html = '<table class="wp-list-table widefat fixed striped products-list">';
+        $html .= '<thead><tr>';
+        $html .= '<th class="check-column"><input type="checkbox" id="select-all-products"></th>';
+        $html .= '<th>' . __('Product Name', 'odooflow') . '</th>';
+        $html .= '<th>' . __('SKU', 'odooflow') . '</th>';
+        $html .= '<th>' . __('Price', 'odooflow') . '</th>';
+        $html .= '</tr></thead><tbody>';
+
+        $products = $products_data['params']['param']['value']['array']['data']['value'] ?? array();
+        
+        if (empty($products)) {
+            $html .= '<tr><td colspan="4">' . __('No products found.', 'odooflow') . '</td></tr>';
+        } else {
+            foreach ($products as $product) {
+                $product_struct = $product['struct']['member'];
+                $product_data = array();
+                
+                // Convert the product data structure to a more usable format
+                foreach ($product_struct as $member) {
+                    $name = $member['name'];
+                    $value = current($member['value']);
+                    $product_data[$name] = $value;
+                }
+
+                $html .= sprintf(
+                    '<tr>
+                        <td><input type="checkbox" name="import_products[]" value="%s"></td>
+                        <td>%s</td>
+                        <td>%s</td>
+                        <td>%s</td>
+                    </tr>',
+                    esc_attr($product_data['id']),
+                    esc_html($product_data['name']),
+                    esc_html($product_data['default_code'] ?? ''),
+                    esc_html(number_format($product_data['list_price'], 2))
+                );
+            }
+        }
+
+        $html .= '</tbody></table>';
+
+        wp_send_json_success(array('html' => $html));
+    }
+
+    /**
+     * AJAX handler for importing selected products
+     */
+    public function ajax_import_selected_products() {
+        check_ajax_referer('odooflow_refresh_databases', 'nonce');
+
+        if (!isset($_POST['product_ids']) || !is_array($_POST['product_ids'])) {
+            wp_send_json_error(array('message' => __('No products selected.', 'odooflow')));
+            return;
+        }
+
+        $product_ids = array_map('intval', $_POST['product_ids']);
+        
+        // Get the product details from Odoo
+        $odoo_products = $this->get_odoo_products($product_ids);
+        
+        if (is_wp_error($odoo_products)) {
+            wp_send_json_error(array('message' => $odoo_products->get_error_message()));
+            return;
+        }
+
+        $imported_count = 0;
+        $failed_imports = array();
+
+        foreach ($odoo_products as $odoo_product) {
+            $result = $this->create_woo_product($odoo_product);
+            if (is_wp_error($result)) {
+                $failed_imports[] = array(
+                    'name' => $odoo_product['name'],
+                    'error' => $result->get_error_message()
+                );
+            } else {
+                $imported_count++;
+            }
+        }
+
         wp_send_json_success(array(
-            'count' => $product_count,
-            'message' => sprintf(__('Total Odoo Products: %d', 'odooflow'), $product_count)
+            'imported' => $imported_count,
+            'failed' => $failed_imports,
+            'message' => sprintf(
+                __('Successfully imported %d products. %d failed.', 'odooflow'),
+                $imported_count,
+                count($failed_imports)
+            )
         ));
+    }
+
+    /**
+     * Get product details from Odoo
+     */
+    private function get_odoo_products($product_ids) {
+        $odoo_url = get_option('odooflow_odoo_url', '');
+        $username = get_option('odooflow_username', '');
+        $api_key = get_option('odooflow_api_key', '');
+        $database = get_option('odooflow_database', '');
+
+        if (empty($odoo_url) || empty($username) || empty($api_key) || empty($database)) {
+            return new WP_Error('missing_credentials', __('Please configure all Odoo connection settings first.', 'odooflow'));
+        }
+
+        // First authenticate to get the user ID
+        $auth_request = xmlrpc_encode_request('authenticate', array(
+            $database,
+            $username,
+            $api_key,
+            array()
+        ));
+
+        $auth_response = wp_remote_post(rtrim($odoo_url, '/') . '/xmlrpc/2/common', [
+            'body' => $auth_request,
+            'headers' => ['Content-Type' => 'text/xml'],
+            'timeout' => 30,
+            'sslverify' => false
+        ]);
+
+        if (is_wp_error($auth_response)) {
+            return new WP_Error('connection_error', __('Error connecting to Odoo server.', 'odooflow'));
+        }
+
+        $auth_body = wp_remote_retrieve_body($auth_response);
+        $auth_xml = simplexml_load_string($auth_body);
+        if ($auth_xml === false) {
+            return new WP_Error('parse_error', __('Error parsing authentication response.', 'odooflow'));
+        }
+
+        $auth_data = json_decode(json_encode($auth_xml), true);
+        if (isset($auth_data['fault'])) {
+            return new WP_Error('auth_failed', __('Authentication failed. Please check your credentials.', 'odooflow'));
+        }
+
+        $uid = $auth_data['params']['param']['value']['int'] ?? null;
+        if (!$uid) {
+            return new WP_Error('no_uid', __('Could not get user ID from authentication response.', 'odooflow'));
+        }
+
+        // Get specific products from Odoo
+        $products_request = xmlrpc_encode_request('execute_kw', array(
+            $database,
+            $uid,
+            $api_key,
+            'product.product',
+            'search_read',
+            array(
+                array(
+                    array('id', 'in', $product_ids)
+                )
+            ),
+            array(
+                'fields' => array('name', 'default_code', 'list_price', 'id', 'description', 'type', 'categ_id'),
+            )
+        ));
+
+        $products_response = wp_remote_post(rtrim($odoo_url, '/') . '/xmlrpc/2/object', [
+            'body' => $products_request,
+            'headers' => ['Content-Type' => 'text/xml'],
+            'timeout' => 30,
+            'sslverify' => false
+        ]);
+
+        if (is_wp_error($products_response)) {
+            return new WP_Error('fetch_error', __('Error fetching products.', 'odooflow'));
+        }
+
+        $products_body = wp_remote_retrieve_body($products_response);
+        error_log('Raw Products Response: ' . $products_body);
+
+        $products_xml = simplexml_load_string($products_body);
+        if ($products_xml === false) {
+            return new WP_Error('parse_error', __('Error parsing products response.', 'odooflow'));
+        }
+
+        $products_data = json_decode(json_encode($products_xml), true);
+        error_log('Decoded Products Data: ' . print_r($products_data, true));
+
+        if (isset($products_data['fault'])) {
+            return new WP_Error('fetch_error', __('Error retrieving products: ', 'odooflow') . $products_data['fault']['value']['struct']['member'][1]['value']['string']);
+        }
+
+        $products = array();
+        
+        // Check if we have a single product or multiple products
+        if (isset($products_data['params']['param']['value']['array']['data']['value']['struct'])) {
+            // Single product
+            $product = $products_data['params']['param']['value']['array']['data']['value']['struct'];
+            $product_data = $this->parse_product_data($product);
+            if (!empty($product_data)) {
+                $products[] = $product_data;
+            }
+        } elseif (isset($products_data['params']['param']['value']['array']['data']['value'])) {
+            // Multiple products
+            $data = $products_data['params']['param']['value']['array']['data']['value'];
+            if (is_array($data)) {
+                foreach ($data as $product) {
+                    if (isset($product['struct'])) {
+                        $product_data = $this->parse_product_data($product['struct']);
+                        if (!empty($product_data)) {
+                            $products[] = $product_data;
+                        }
+                    }
+                }
+            }
+        }
+
+        error_log('Formatted Products: ' . print_r($products, true));
+        return $products;
+    }
+
+    /**
+     * Parse product data from XML-RPC response
+     */
+    private function parse_product_data($product_struct) {
+        $product_data = array();
+        
+        if (!isset($product_struct['member']) || !is_array($product_struct['member'])) {
+            return array();
+        }
+
+        foreach ($product_struct['member'] as $member) {
+            if (!isset($member['name']) || !isset($member['value'])) {
+                continue;
+            }
+
+            $name = $member['name'];
+            $value = $member['value'];
+
+            switch ($name) {
+                case 'id':
+                    $product_data[$name] = isset($value['int']) ? (int)$value['int'] : 0;
+                    break;
+                case 'name':
+                    $product_data[$name] = isset($value['string']) ? (string)$value['string'] : '';
+                    break;
+                case 'default_code':
+                    $product_data[$name] = isset($value['string']) ? (string)$value['string'] : '';
+                    break;
+                case 'list_price':
+                    $product_data[$name] = isset($value['double']) ? (float)$value['double'] : 0.0;
+                    break;
+                case 'description':
+                    // Handle both string and boolean cases
+                    if (isset($value['string'])) {
+                        $product_data[$name] = (string)$value['string'];
+                    } elseif (isset($value['boolean'])) {
+                        $product_data[$name] = '';  // Set empty string if boolean false
+                    }
+                    break;
+                case 'type':
+                    $product_data[$name] = isset($value['string']) ? (string)$value['string'] : 'product';
+                    break;
+                case 'categ_id':
+                    // Handle both array and boolean cases
+                    if (isset($value['array'])) {
+                        $product_data[$name] = $value['array'];
+                    } elseif (isset($value['boolean'])) {
+                        $product_data[$name] = array();  // Set empty array if boolean false
+                    }
+                    break;
+            }
+        }
+
+        return $product_data;
+    }
+
+    /**
+     * Create WooCommerce product from Odoo product data
+     */
+    private function create_woo_product($odoo_product) {
+        error_log('Creating product with data: ' . print_r($odoo_product, true));
+
+        if (empty($odoo_product['name'])) {
+            return new WP_Error('invalid_product', __('Product name is required', 'odooflow'));
+        }
+
+        try {
+            $product = new WC_Product_Simple();
+            
+            // Set basic product data
+            $product->set_name($odoo_product['name']);
+            
+            // Set SKU if available
+            if (!empty($odoo_product['default_code'])) {
+                $existing_id = wc_get_product_id_by_sku($odoo_product['default_code']);
+                if ($existing_id) {
+                    return new WP_Error('duplicate_sku', sprintf(__('Product with SKU "%s" already exists.', 'odooflow'), $odoo_product['default_code']));
+                }
+                $product->set_sku($odoo_product['default_code']);
+            }
+            
+            // Set price
+            if (isset($odoo_product['list_price']) && is_numeric($odoo_product['list_price'])) {
+                $product->set_regular_price(number_format($odoo_product['list_price'], 2, '.', ''));
+            }
+            
+            // Set description
+            if (!empty($odoo_product['description'])) {
+                $product->set_description($odoo_product['description']);
+            }
+            
+            $product->set_status('publish');
+            
+            // Save Odoo ID as meta
+            if (!empty($odoo_product['id'])) {
+                $product->update_meta_data('_odoo_product_id', $odoo_product['id']);
+            }
+
+            $result = $product->save();
+            
+            if (!$result) {
+                error_log('Failed to create product: ' . print_r($odoo_product, true));
+                return new WP_Error('product_creation_failed', __('Failed to create product in WooCommerce', 'odooflow'));
+            }
+
+            return $result;
+
+        } catch (Exception $e) {
+            error_log('Exception creating product: ' . $e->getMessage());
+            return new WP_Error('product_creation_exception', $e->getMessage());
+        }
     }
 }
 

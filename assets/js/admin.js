@@ -130,4 +130,114 @@ jQuery(document).ready(function($) {
             }
         });
     });
+
+    // Modal handling
+    const modal = $('#odoo-products-modal');
+    const modalClose = $('.odoo-modal-close');
+    const productsList = $('.odoo-products-list');
+    
+    // Close modal when clicking the close button or outside the modal
+    modalClose.on('click', function() {
+        modal.hide();
+    });
+    
+    $(window).on('click', function(event) {
+        if (event.target === modal[0]) {
+            modal.hide();
+        }
+    });
+    
+    // Get Odoo Products button click handler
+    $('.get-odoo-products').on('click', function() {
+        const loadingOverlay = $('<div class="loading-overlay"><div class="loading-spinner"></div></div>');
+        productsList.append(loadingOverlay);
+        modal.show();
+        
+        $.ajax({
+            url: odooflow.ajax_url,
+            type: 'POST',
+            data: {
+                action: 'get_odoo_products_count',
+                nonce: odooflow.nonce
+            },
+            success: function(response) {
+                if (response.success) {
+                    productsList.html(response.data.html);
+                } else {
+                    productsList.html('<div class="notice notice-error"><p>' + response.data.message + '</p></div>');
+                }
+            },
+            error: function() {
+                productsList.html('<div class="notice notice-error"><p>Error fetching products</p></div>');
+            },
+            complete: function() {
+                loadingOverlay.remove();
+            }
+        });
+    });
+    
+    // Select/Deselect all products
+    $(document).on('click', '#select-all-products', function() {
+        $('input[name="import_products[]"]').prop('checked', this.checked);
+    });
+    
+    $('.select-all-products').on('click', function() {
+        $('input[name="import_products[]"]').prop('checked', true);
+        $('#select-all-products').prop('checked', true);
+    });
+    
+    $('.deselect-all-products').on('click', function() {
+        $('input[name="import_products[]"]').prop('checked', false);
+        $('#select-all-products').prop('checked', false);
+    });
+    
+    // Import selected products
+    $('.import-selected-products').on('click', function() {
+        const selectedProducts = $('input[name="import_products[]"]:checked').map(function() {
+            return parseInt(this.value, 10);
+        }).get();
+        
+        if (selectedProducts.length === 0) {
+            alert('Please select at least one product to import');
+            return;
+        }
+        
+        const loadingOverlay = $('<div class="loading-overlay"><div class="loading-spinner"></div></div>');
+        $('.odoo-modal-content').append(loadingOverlay);
+        
+        $.ajax({
+            url: odooflow.ajax_url,
+            type: 'POST',
+            data: {
+                action: 'import_selected_products',
+                nonce: odooflow.nonce,
+                product_ids: selectedProducts
+            },
+            success: function(response) {
+                if (response.success) {
+                    if (response.data.failed && response.data.failed.length > 0) {
+                        let errorMessage = 'Some products failed to import:\n\n';
+                        response.data.failed.forEach(function(failure) {
+                            errorMessage += `${failure.name}: ${failure.error}\n`;
+                        });
+                        alert(response.data.message + '\n\n' + errorMessage);
+                    } else {
+                        alert(response.data.message);
+                    }
+                    if (response.data.imported > 0) {
+                        // Reload the page to show new products
+                        window.location.reload();
+                    }
+                } else {
+                    alert('Error: ' + response.data.message);
+                }
+            },
+            error: function() {
+                alert('Error importing products');
+            },
+            complete: function() {
+                loadingOverlay.remove();
+            }
+        });
+    });
 }); 
