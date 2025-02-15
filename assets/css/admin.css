@@ -1,13 +1,38 @@
 .odoo-database-wrapper {
     display: flex;
-    align-items: center;
+    flex-direction: column;
     gap: 10px;
+}
+
+.database-select-container {
+    flex: 1;
+}
+
+.database-controls {
+    display: flex;
+    align-items: center;
+    gap: 15px;
+}
+
+.manual-db-toggle {
+    display: flex;
+    align-items: center;
+    gap: 5px;
+}
+
+.manual-db-toggle input[type="checkbox"] {
+    margin: 0;
+}
+
+.manual-db-input {
+    width: 100%;
 }
 
 .odoo-database-wrapper .notice {
     margin: 10px 0;
 }
 
+.odoo-settings-wrapper,
 .odoo-modules-wrapper {
     margin-top: 20px;
     padding: 20px;
@@ -16,8 +41,36 @@
     box-shadow: 0 1px 1px rgba(0,0,0,.04);
 }
 
+.odoo-settings-wrapper h2,
 .odoo-modules-wrapper h2 {
     margin-top: 0;
+    padding-bottom: 12px;
+    border-bottom: 1px solid #ccd0d4;
+    margin-bottom: 20px;
+}
+
+.odoo-settings-actions {
+    margin-top: 20px;
+    padding-top: 20px;
+    border-top: 1px solid #ccd0d4;
+}
+
+.odoo-settings-actions .button {
+    margin-right: 10px;
+}
+
+.odoo-settings-wrapper .form-table {
+    margin-top: 0;
+}
+
+.odoo-settings-wrapper .form-table th {
+    padding-top: 15px;
+    padding-bottom: 15px;
+}
+
+.odoo-settings-wrapper .notice {
+    margin: 20px 0 0 0;
+    box-shadow: none;
 }
 
 .odoo-modules-wrapper table {
@@ -38,4 +91,38 @@
 .odoo-modules-wrapper .notice {
     margin: 0;
     box-shadow: none;
+}
+
+.odoo-modules-wrapper .modules-content:empty {
+    min-height: 100px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    background: #f8f9fa;
+    border: 1px dashed #ccd0d4;
+    margin-top: 10px;
+}
+
+.odoo-modules-wrapper .modules-content:empty::before {
+    content: 'Click "List Modules" to view installed Odoo modules';
+    color: #666;
+    font-style: italic;
+}
+
+.odoo-products-count-result {
+    display: inline-block;
+    margin-left: 10px;
+    vertical-align: middle;
+}
+
+.odoo-products-count-result .notice {
+    display: inline-block;
+    margin: 0;
+    padding: 5px 10px;
+}
+
+.odoo-products-count-result .spinner {
+    float: none;
+    margin: 0 5px 0 0;
+    vertical-align: middle;
 } 
