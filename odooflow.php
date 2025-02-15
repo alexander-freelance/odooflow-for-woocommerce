@@ -67,6 +67,9 @@ class OdooFlow {
         add_action('admin_menu', array($this, 'add_admin_menu'));
         add_filter('plugin_action_links_' . plugin_basename(__FILE__), array($this, 'add_settings_link'));
         add_action('plugins_loaded', array($this, 'init_plugin'));
+        add_action('admin_enqueue_scripts', array($this, 'enqueue_admin_scripts'));
+        add_action('wp_ajax_refresh_odoo_databases', array($this, 'ajax_refresh_odoo_databases'));
+        add_action('wp_ajax_list_odoo_modules', array($this, 'ajax_list_odoo_modules'));
     }
 
     /**
@@ -121,6 +124,190 @@ class OdooFlow {
     }
 
     /**
+     * Enqueue admin scripts
+     */
+    public function enqueue_admin_scripts($hook) {
+        if ('toplevel_page_odooflow-settings' !== $hook) {
+            return;
+        }
+
+        wp_enqueue_style('odooflow-admin', ODOOFLOW_PLUGIN_URL . 'assets/css/admin.css', array(), ODOOFLOW_VERSION);
+        wp_enqueue_script('odooflow-admin', ODOOFLOW_PLUGIN_URL . 'assets/js/admin.js', array('jquery'), ODOOFLOW_VERSION, true);
+        wp_localize_script('odooflow-admin', 'odooflow', array(
+            'ajax_url' => admin_url('admin-ajax.php'),
+            'nonce' => wp_create_nonce('odooflow_refresh_databases'),
+        ));
+    }
+
+    /**
+     * AJAX handler for refreshing Odoo databases
+     */
+    public function ajax_refresh_odoo_databases() {
+        check_ajax_referer('odooflow_refresh_databases', 'nonce');
+
+        $odoo_url = get_option('odooflow_odoo_url', '');
+        $username = get_option('odooflow_username', '');
+        $api_key = get_option('odooflow_api_key', '');
+        $current_db = get_option('odooflow_database', '');
+
+        $databases = $this->get_odoo_databases($odoo_url, $username, $api_key);
+        
+        if (is_string($databases)) {
+            wp_send_json_error(array('message' => $databases));
+        } else {
+            $html = '<select name="odoo_database" id="odoo_database" class="regular-text">';
+            foreach ($databases as $db) {
+                $selected = ($db === $current_db) ? 'selected' : '';
+                $html .= sprintf('<option value="%s" %s>%s</option>', 
+                    esc_attr($db),
+                    $selected,
+                    esc_html($db)
+                );
+            }
+            $html .= '</select>';
+            wp_send_json_success(array('html' => $html));
+        }
+    }
+
+    /**
+     * AJAX handler for listing Odoo modules
+     */
+    public function ajax_list_odoo_modules() {
+        check_ajax_referer('odooflow_refresh_databases', 'nonce');
+
+        $odoo_url = get_option('odooflow_odoo_url', '');
+        $username = get_option('odooflow_username', '');
+        $api_key = get_option('odooflow_api_key', '');
+        $database = get_option('odooflow_database', '');
+
+        if (empty($odoo_url) || empty($username) || empty($api_key) || empty($database)) {
+            wp_send_json_error(array('message' => __('Please configure all Odoo connection settings first.', 'odooflow')));
+            return;
+        }
+
+        // First authenticate to get the user ID
+        $auth_request = xmlrpc_encode_request('authenticate', array(
+            $database,
+            $username,
+            $api_key,
+            array()
+        ));
+
+        $auth_response = wp_remote_post(rtrim($odoo_url, '/') . '/xmlrpc/2/common', [
+            'body' => $auth_request,
+            'headers' => ['Content-Type' => 'text/xml'],
+            'timeout' => 30,
+            'sslverify' => false
+        ]);
+
+        if (is_wp_error($auth_response)) {
+            wp_send_json_error(array('message' => __('Error connecting to Odoo server.', 'odooflow')));
+            return;
+        }
+
+        $auth_body = wp_remote_retrieve_body($auth_response);
+        $auth_xml = simplexml_load_string($auth_body);
+        if ($auth_xml === false) {
+            wp_send_json_error(array('message' => __('Error parsing authentication response.', 'odooflow')));
+            return;
+        }
+
+        $auth_data = json_decode(json_encode($auth_xml), true);
+        if (isset($auth_data['fault'])) {
+            wp_send_json_error(array('message' => __('Authentication failed. Please check your credentials.', 'odooflow')));
+            return;
+        }
+
+        $uid = $auth_data['params']['param']['value']['int'] ?? null;
+        if (!$uid) {
+            wp_send_json_error(array('message' => __('Could not get user ID from authentication response.', 'odooflow')));
+            return;
+        }
+
+        // Now get the list of installed modules
+        $modules_request = xmlrpc_encode_request('execute_kw', array(
+            $database,
+            $uid,
+            $api_key,
+            'ir.module.module',
+            'search_read',
+            array(
+                array(
+                    array('state', '=', 'installed')
+                )
+            ),
+            array(
+                'fields' => array('name', 'shortdesc', 'state', 'installed_version'),
+                'order' => 'name ASC'
+            )
+        ));
+
+        $modules_response = wp_remote_post(rtrim($odoo_url, '/') . '/xmlrpc/2/object', [
+            'body' => $modules_request,
+            'headers' => ['Content-Type' => 'text/xml'],
+            'timeout' => 30,
+            'sslverify' => false
+        ]);
+
+        if (is_wp_error($modules_response)) {
+            wp_send_json_error(array('message' => __('Error fetching modules.', 'odooflow')));
+            return;
+        }
+
+        $modules_body = wp_remote_retrieve_body($modules_response);
+        $modules_xml = simplexml_load_string($modules_body);
+        if ($modules_xml === false) {
+            wp_send_json_error(array('message' => __('Error parsing modules response.', 'odooflow')));
+            return;
+        }
+
+        $modules_data = json_decode(json_encode($modules_xml), true);
+        if (isset($modules_data['fault'])) {
+            wp_send_json_error(array('message' => __('Error retrieving modules: ', 'odooflow') . $modules_data['fault']['value']['struct']['member'][1]['value']['string']));
+            return;
+        }
+
+        // Build the HTML table
+        $html = '<h2>' . __('Installed Modules', 'odooflow') . '</h2>';
+        $html .= '<table class="wp-list-table widefat fixed striped">';
+        $html .= '<thead><tr>';
+        $html .= '<th>' . __('Module Name', 'odooflow') . '</th>';
+        $html .= '<th>' . __('Description', 'odooflow') . '</th>';
+        $html .= '<th>' . __('Version', 'odooflow') . '</th>';
+        $html .= '<th>' . __('Status', 'odooflow') . '</th>';
+        $html .= '</tr></thead><tbody>';
+
+        $modules = $modules_data['params']['param']['value']['array']['data']['value'] ?? array();
+        
+        if (empty($modules)) {
+            $html .= '<tr><td colspan="4">' . __('No modules found.', 'odooflow') . '</td></tr>';
+        } else {
+            foreach ($modules as $module) {
+                $module_struct = $module['struct']['member'];
+                $module_data = array();
+                
+                // Convert the module data structure to a more usable format
+                foreach ($module_struct as $member) {
+                    $name = $member['name'];
+                    $value = current($member['value']);
+                    $module_data[$name] = $value;
+                }
+
+                $html .= '<tr>';
+                $html .= '<td>' . esc_html($module_data['name']) . '</td>';
+                $html .= '<td>' . esc_html($module_data['shortdesc']) . '</td>';
+                $html .= '<td>' . esc_html($module_data['installed_version']) . '</td>';
+                $html .= '<td>' . esc_html($module_data['state']) . '</td>';
+                $html .= '</tr>';
+            }
+        }
+
+        $html .= '</tbody></table>';
+
+        wp_send_json_success(array('html' => $html));
+    }
+
+    /**
      * Settings page
      */
     public function settings_page() {
@@ -134,16 +321,22 @@ class OdooFlow {
             $odoo_url = isset($_POST['odoo_instance_url']) ? sanitize_text_field($_POST['odoo_instance_url']) : '';
             $username = isset($_POST['odoo_username']) ? sanitize_text_field($_POST['odoo_username']) : '';
             $api_key = isset($_POST['odoo_api_key']) ? sanitize_text_field($_POST['odoo_api_key']) : '';
+            $database = isset($_POST['odoo_database']) ? sanitize_text_field($_POST['odoo_database']) : '';
 
             update_option('odooflow_odoo_url', $odoo_url);
             update_option('odooflow_username', $username);
             update_option('odooflow_api_key', $api_key);
+            update_option('odooflow_database', $database);
 
             add_settings_error('odooflow_messages', 'odooflow_message', __('Settings Saved', 'odooflow'), 'updated');
         }
 
         $xmlrpc_status = isset($_POST['check_xmlrpc_status']) ? $this->check_xmlrpc_status() : '';
         $odoo_version_info = isset($_POST['check_odoo_version']) ? $this->get_odoo_version(get_option('odooflow_odoo_url', '')) : '';
+
+        $odoo_url = get_option('odooflow_odoo_url', '');
+        $username = get_option('odooflow_username', '');
+        $api_key = get_option('odooflow_api_key', '');
 
         ?>
         <div class="wrap">
@@ -165,11 +358,42 @@ class OdooFlow {
                         <th><label for="odoo_api_key"><?php _e('API Key', 'odooflow'); ?></label></th>
                         <td><input type="password" name="odoo_api_key" id="odoo_api_key" value="<?php echo esc_attr(get_option('odooflow_api_key', '')); ?>" class="regular-text"></td>
                     </tr>
+                    <tr>
+                        <th><label for="odoo_database"><?php _e('Select Database', 'odooflow'); ?></label></th>
+                        <td>
+                            <div class="odoo-database-wrapper">
+                                <?php
+                                $databases = $this->get_odoo_databases($odoo_url, $username, $api_key);
+                                $current_db = get_option('odooflow_database', '');
+                                if (is_string($databases)) {
+                                    echo '<div class="notice notice-error"><p>' . esc_html($databases) . '</p></div>';
+                                } else {
+                                    echo '<select name="odoo_database" id="odoo_database" class="regular-text">';
+                                    foreach ($databases as $db) {
+                                        $selected = ($db === $current_db) ? 'selected' : '';
+                                        echo sprintf('<option value="%s" %s>%s</option>', 
+                                            esc_attr($db),
+                                            $selected,
+                                            esc_html($db)
+                                        );
+                                    }
+                                    echo '</select>';
+                                }
+                                ?>
+                                <button type="button" class="button-secondary refresh-databases">
+                                    <?php _e('Refresh Databases', 'odooflow'); ?>
+                                </button>
+                            </div>
+                        </td>
+                    </tr>
                 </table>
 
                 <?php submit_button(__('Save Settings', 'odooflow'), 'primary', 'odooflow_settings_submit'); ?>
                 <input type="submit" name="check_xmlrpc_status" class="button-secondary" value="<?php _e('Check XML-RPC Status', 'odooflow'); ?>">
                 <input type="submit" name="check_odoo_version" class="button-secondary" value="<?php _e('Check Odoo Version', 'odooflow'); ?>">
+                <button type="button" class="button-secondary list-modules">
+                    <?php _e('List Modules', 'odooflow'); ?>
+                </button>
             </form>
 
             <?php if ($xmlrpc_status): ?>
@@ -179,6 +403,10 @@ class OdooFlow {
             <?php if ($odoo_version_info): ?>
                 <div class="notice notice-info"><p><?php echo esc_html($odoo_version_info); ?></p></div>
             <?php endif; ?>
+
+            <div id="odoo-modules-list" class="odoo-modules-wrapper" style="margin-top: 20px;">
+                <!-- Modules will be loaded here -->
+            </div>
         </div>
         <?php
     }
@@ -237,6 +465,102 @@ class OdooFlow {
         } else {
             return __('XML-RPC is disabled.', 'odooflow');
         }
+    }
+
+    private function get_odoo_databases($odoo_url, $username, $api_key) {
+        if (empty($odoo_url)) {
+            error_log('OdooFlow: Missing Odoo URL');
+            return __('Odoo URL is not set.', 'odooflow');
+        }
+
+        if (!function_exists('xmlrpc_encode_request')) {
+            error_log('OdooFlow: XML-RPC polyfill is missing');
+            return __('XML-RPC polyfill is missing. Run `composer require phpxmlrpc/polyfill-xmlrpc`.', 'odooflow');
+        }
+
+        // For Odoo SaaS, we need to authenticate first and then get the database name
+        if (strpos($odoo_url, 'odoo.com') !== false) {
+            error_log('OdooFlow: Detected Odoo SaaS instance');
+            
+            // For SaaS instances, the database name is part of the subdomain
+            $parsed_url = parse_url($odoo_url);
+            $host = $parsed_url['host'];
+            $subdomain_parts = explode('.', $host);
+            
+            if (count($subdomain_parts) >= 3) {
+                $database = $subdomain_parts[0];
+                error_log('OdooFlow: Found SaaS database - ' . $database);
+                return array($database);
+            }
+        }
+
+        // Try the server info method which is more commonly available
+        $request = xmlrpc_encode_request('server_version', array());
+        error_log('OdooFlow: Making XML-RPC request to ' . rtrim($odoo_url, '/') . '/xmlrpc/2/db');
+        
+        $response = wp_remote_post(rtrim($odoo_url, '/') . '/xmlrpc/2/db', [
+            'body' => $request,
+            'headers' => [
+                'Content-Type' => 'text/xml',
+            ],
+            'timeout' => 30,
+            'sslverify' => false // Only for development/testing. Remove in production.
+        ]);
+
+        if (is_wp_error($response)) {
+            error_log('OdooFlow: Error connecting to server - ' . $response->get_error_message());
+            return __('Error connecting to Odoo server.', 'odooflow');
+        }
+
+        $body = wp_remote_retrieve_body($response);
+        if (empty($body)) {
+            error_log('OdooFlow: Empty response from Odoo server');
+            return __('Empty response from Odoo server.', 'odooflow');
+        }
+
+        error_log('OdooFlow: Response body - ' . $body);
+
+        // For Odoo SaaS or restricted instances, we'll try to authenticate and get the database name
+        // from the credentials
+        if (!empty($username) && !empty($api_key)) {
+            $auth_request = xmlrpc_encode_request('authenticate', array(
+                $username,  // database name (same as username for SaaS)
+                $username,
+                $api_key,
+                array()
+            ));
+
+            $auth_response = wp_remote_post(rtrim($odoo_url, '/') . '/xmlrpc/2/common', [
+                'body' => $auth_request,
+                'headers' => [
+                    'Content-Type' => 'text/xml',
+                ],
+                'timeout' => 30,
+                'sslverify' => false
+            ]);
+
+            if (!is_wp_error($auth_response)) {
+                $auth_body = wp_remote_retrieve_body($auth_response);
+                error_log('OdooFlow: Auth response - ' . $auth_body);
+                
+                // If authentication succeeds, we know the database exists
+                if (strpos($auth_body, 'fault') === false) {
+                    error_log('OdooFlow: Authentication successful, using username as database');
+                    return array($username);
+                }
+            }
+        }
+
+        // If we can't determine the database through other means,
+        // and we have a database saved in options, use that
+        $saved_db = get_option('odooflow_database', '');
+        if (!empty($saved_db)) {
+            error_log('OdooFlow: Using saved database - ' . $saved_db);
+            return array($saved_db);
+        }
+
+        error_log('OdooFlow: Could not determine database name');
+        return array();
     }
 }
 

@@ -1,0 +1,41 @@
+.odoo-database-wrapper {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+}
+
+.odoo-database-wrapper .notice {
+    margin: 10px 0;
+}
+
+.odoo-modules-wrapper {
+    margin-top: 20px;
+    padding: 20px;
+    background: #fff;
+    border: 1px solid #ccd0d4;
+    box-shadow: 0 1px 1px rgba(0,0,0,.04);
+}
+
+.odoo-modules-wrapper h2 {
+    margin-top: 0;
+}
+
+.odoo-modules-wrapper table {
+    width: 100%;
+    border-spacing: 0;
+}
+
+.odoo-modules-wrapper th {
+    text-align: left;
+    padding: 8px;
+}
+
+.odoo-modules-wrapper td {
+    padding: 8px;
+    vertical-align: top;
+}
+
+.odoo-modules-wrapper .notice {
+    margin: 0;
+    box-shadow: none;
+} 
