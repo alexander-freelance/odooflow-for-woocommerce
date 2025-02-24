@@ -275,17 +275,13 @@ jQuery(document).ready(function($) {
             success: function(response) {
                 console.log('Import response:', response);
                 if (response.success) {
-                    if (response.data.failed && response.data.failed.length > 0) {
-                        let errorMessage = 'Some products failed to import:\n\n';
-                        response.data.failed.forEach(function(failure) {
-                            errorMessage += `${failure.name}: ${failure.error}\n`;
-                        });
-                        alert(response.data.message + '\n\n' + errorMessage);
-                    } else {
-                        alert(response.data.message);
+                    let message = response.data.message;
+                    if (response.data.details) {
+                        message += '\n\nDetails:' + response.data.details;
                     }
-                    if (response.data.imported > 0) {
-                        // Reload the page to show new products
+                    alert(message);
+                    if (response.data.new > 0 || response.data.updated > 0) {
+                        // Reload the page to show new/updated products
                         window.location.reload();
                     }
                 } else {

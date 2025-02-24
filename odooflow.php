@@ -991,36 +991,104 @@ class OdooFlow {
             return;
         }
 
-        $imported_count = 0;
+        $new_count = 0;
+        $updated_count = 0;
         $failed_imports = array();
+        $processed_products = array();
 
         foreach ($odoo_products as $odoo_product) {
-            error_log('OdooFlow: Attempting to import product - ' . print_r($odoo_product, true));
+            error_log('OdooFlow: Processing product - ' . print_r($odoo_product, true));
+            
+            // Check if product exists before import
+            $existing_id = !empty($odoo_product['default_code']) ? wc_get_product_id_by_sku($odoo_product['default_code']) : false;
+            $is_update = (bool)$existing_id;
+
             $result = $this->create_woo_product($odoo_product);
+            
             if (is_wp_error($result)) {
-                error_log('OdooFlow: Failed to import product - ' . $result->get_error_message());
+                error_log('OdooFlow: Failed to process product - ' . $result->get_error_message());
                 $failed_imports[] = array(
                     'name' => $odoo_product['name'],
                     'error' => $result->get_error_message()
                 );
             } else {
-                error_log('OdooFlow: Successfully imported product ID: ' . $result);
-                $imported_count++;
+                if ($is_update) {
+                    $updated_count++;
+                    $processed_products[] = array(
+                        'name' => $odoo_product['name'],
+                        'status' => 'updated'
+                    );
+                } else {
+                    $new_count++;
+                    $processed_products[] = array(
+                        'name' => $odoo_product['name'],
+                        'status' => 'imported'
+                    );
+                }
+                error_log('OdooFlow: Successfully ' . ($is_update ? 'updated' : 'imported') . ' product ID: ' . $result);
             }
         }
 
+        // Build a detailed message
+        $message_parts = array();
+        if ($new_count > 0) {
+            $message_parts[] = sprintf(_n('%d product imported', '%d products imported', $new_count, 'odooflow'), $new_count);
+        }
+        if ($updated_count > 0) {
+            $message_parts[] = sprintf(_n('%d product updated', '%d products updated', $updated_count, 'odooflow'), $updated_count);
+        }
+        if (count($failed_imports) > 0) {
+            $message_parts[] = sprintf(_n('%d product failed', '%d products failed', count($failed_imports), 'odooflow'), count($failed_imports));
+        }
+
         $response = array(
-            'imported' => $imported_count,
+            'new' => $new_count,
+            'updated' => $updated_count,
             'failed' => $failed_imports,
-            'message' => sprintf(
-                __('Successfully imported %d products. %d failed.', 'odooflow'),
-                $imported_count,
-                count($failed_imports)
-            )
+            'processed' => $processed_products,
+            'message' => implode(', ', $message_parts) . '.',
+            'details' => $this->get_detailed_import_message($processed_products, $failed_imports)
         );
 
         error_log('OdooFlow: Import complete - ' . print_r($response, true));
         wp_send_json_success($response);
+    }
+
+    /**
+     * Generate a detailed import message
+     */
+    private function get_detailed_import_message($processed_products, $failed_imports) {
+        $details = '';
+        
+        // Group products by status
+        $imported = array_filter($processed_products, function($p) { return $p['status'] === 'imported'; });
+        $updated = array_filter($processed_products, function($p) { return $p['status'] === 'updated'; });
+        
+        // Add imported products details
+        if (!empty($imported)) {
+            $details .= "\n\n" . __('Imported Products:', 'odooflow') . "\n";
+            foreach ($imported as $product) {
+                $details .= '- ' . $product['name'] . "\n";
+            }
+        }
+        
+        // Add updated products details
+        if (!empty($updated)) {
+            $details .= "\n" . __('Updated Products:', 'odooflow') . "\n";
+            foreach ($updated as $product) {
+                $details .= '- ' . $product['name'] . "\n";
+            }
+        }
+        
+        // Add failed products details
+        if (!empty($failed_imports)) {
+            $details .= "\n" . __('Failed Products:', 'odooflow') . "\n";
+            foreach ($failed_imports as $product) {
+                $details .= '- ' . $product['name'] . ': ' . $product['error'] . "\n";
+            }
+        }
+        
+        return $details;
     }
 
     /**
