@@ -72,6 +72,8 @@ class OdooFlow {
         add_action('wp_ajax_list_odoo_modules', array($this, 'ajax_list_odoo_modules'));
         add_action('wp_ajax_get_odoo_products', array($this, 'ajax_get_odoo_products'));
         add_action('wp_ajax_import_selected_products', array($this, 'ajax_import_selected_products'));
+        add_action('wp_ajax_get_woo_products', array($this, 'ajax_get_woo_products'));
+        add_action('wp_ajax_export_selected_products', array($this, 'ajax_export_selected_products'));
         add_action('manage_posts_extra_tablenav', array($this, 'add_odoo_count_button'), 20);
     }
 
@@ -677,6 +679,9 @@ class OdooFlow {
             <button type="button" class="button-secondary get-odoo-products">
                 <?php _e('Get Odoo Products', 'odooflow'); ?>
             </button>
+            <button type="button" class="button-secondary export-to-odoo">
+                <?php _e('Export to Odoo', 'odooflow'); ?>
+            </button>
         </div>
 
         <!-- Modal for product selection -->
@@ -760,6 +765,82 @@ class OdooFlow {
                     </div>
                     <button type="button" class="button-primary import-selected-products">
                         <?php _e('Import Selected Products', 'odooflow'); ?>
+                    </button>
+                </div>
+            </div>
+        </div>
+
+        <!-- Modal for product export -->
+        <div id="odoo-export-modal" class="odoo-modal" style="display: none;">
+            <div class="odoo-modal-content">
+                <div class="odoo-modal-header">
+                    <h2><?php _e('Select Products to Export', 'odooflow'); ?></h2>
+                    <span class="odoo-modal-close">&times;</span>
+                </div>
+                <div class="odoo-modal-body">
+                    <!-- Field selection section -->
+                    <div class="field-selection-section">
+                        <h3><?php _e('Select Fields to Export', 'odooflow'); ?></h3>
+                        <div class="field-selection-grid">
+                            <label class="field-checkbox">
+                                <input type="checkbox" name="export_fields[]" value="name" checked disabled>
+                                <span class="checkbox-custom"></span>
+                                <span class="field-label"><?php _e('Product Name', 'odooflow'); ?></span>
+                                <span class="field-required"><?php _e('(Required)', 'odooflow'); ?></span>
+                            </label>
+                            <label class="field-checkbox">
+                                <input type="checkbox" name="export_fields[]" value="default_code" checked disabled>
+                                <span class="checkbox-custom"></span>
+                                <span class="field-label"><?php _e('SKU', 'odooflow'); ?></span>
+                                <span class="field-required"><?php _e('(Required)', 'odooflow'); ?></span>
+                            </label>
+                            <label class="field-checkbox">
+                                <input type="checkbox" name="export_fields[]" value="list_price" checked>
+                                <span class="checkbox-custom"></span>
+                                <span class="field-label"><?php _e('Price', 'odooflow'); ?></span>
+                            </label>
+                            <label class="field-checkbox">
+                                <input type="checkbox" name="export_fields[]" value="description">
+                                <span class="checkbox-custom"></span>
+                                <span class="field-label"><?php _e('Description', 'odooflow'); ?></span>
+                            </label>
+                            <label class="field-checkbox">
+                                <input type="checkbox" name="export_fields[]" value="qty_available">
+                                <span class="checkbox-custom"></span>
+                                <span class="field-label"><?php _e('Stock Quantity', 'odooflow'); ?></span>
+                            </label>
+                            <label class="field-checkbox">
+                                <input type="checkbox" name="export_fields[]" value="weight">
+                                <span class="checkbox-custom"></span>
+                                <span class="field-label"><?php _e('Weight', 'odooflow'); ?></span>
+                            </label>
+                        </div>
+                    </div>
+                    
+                    <div class="products-section">
+                        <h3><?php _e('WooCommerce Products', 'odooflow'); ?></h3>
+                        <div class="woo-products-list">
+                            <!-- Products will be loaded here -->
+                        </div>
+                    </div>
+                </div>
+                <div class="odoo-modal-footer">
+                    <div class="selection-controls">
+                        <button type="button" class="button select-all-woo-products">
+                            <?php _e('Select All Products', 'odooflow'); ?>
+                        </button>
+                        <button type="button" class="button deselect-all-woo-products">
+                            <?php _e('Deselect All Products', 'odooflow'); ?>
+                        </button>
+                        <button type="button" class="button select-all-export-fields">
+                            <?php _e('Select All Fields', 'odooflow'); ?>
+                        </button>
+                        <button type="button" class="button deselect-all-export-fields">
+                            <?php _e('Deselect All Fields', 'odooflow'); ?>
+                        </button>
+                    </div>
+                    <button type="button" class="button-primary export-selected-products">
+                        <?php _e('Export Selected Products', 'odooflow'); ?>
                     </button>
                 </div>
             </div>
@@ -1379,6 +1460,349 @@ class OdooFlow {
         // Implementation for image handling
         // This would create media attachments from Odoo images
         return 0;
+    }
+
+    /**
+     * AJAX handler for getting WooCommerce products
+     */
+    public function ajax_get_woo_products() {
+        error_log('Starting ajax_get_woo_products');
+        
+        // Use consistent nonce verification
+        if (!check_ajax_referer('odooflow_ajax_nonce', 'nonce', false)) {
+            error_log('OdooFlow: Nonce verification failed for get_woo_products');
+            wp_send_json_error(array('message' => __('Security check failed. Please refresh the page and try again.', 'odooflow')));
+            return;
+        }
+
+        // Query WooCommerce products
+        $args = array(
+            'post_type' => 'product',
+            'post_status' => 'publish',
+            'posts_per_page' => 100,
+        );
+
+        $products_query = new WP_Query($args);
+        $products = array();
+
+        if ($products_query->have_posts()) {
+            while ($products_query->have_posts()) {
+                $products_query->the_post();
+                $product = wc_get_product(get_the_ID());
+                
+                if (!$product) continue;
+
+                $products[] = array(
+                    'id' => $product->get_id(),
+                    'name' => $product->get_name(),
+                    'sku' => $product->get_sku(),
+                    'price' => $product->get_regular_price(),
+                );
+            }
+            wp_reset_postdata();
+        }
+
+        // Build the HTML for the products list
+        $html = '<table class="wp-list-table widefat fixed striped products-list">';
+        $html .= '<thead><tr>';
+        $html .= '<th class="check-column"><input type="checkbox" id="select-all-woo-products"><label for="select-all-woo-products"></label></th>';
+        $html .= '<th>' . __('Product Name', 'odooflow') . '</th>';
+        $html .= '<th>' . __('SKU', 'odooflow') . '</th>';
+        $html .= '<th>' . __('Price', 'odooflow') . '</th>';
+        $html .= '</tr></thead><tbody>';
+
+        if (empty($products)) {
+            $html .= '<tr><td colspan="4">' . __('No products found.', 'odooflow') . '</td></tr>';
+        } else {
+            foreach ($products as $product) {
+                $html .= sprintf(
+                    '<tr>
+                        <td class="check-column">
+                            <input type="checkbox" name="export_products[]" id="product-%1$s" value="%1$s">
+                            <label for="product-%1$s"></label>
+                        </td>
+                        <td>%2$s</td>
+                        <td>%3$s</td>
+                        <td>%4$s</td>
+                    </tr>',
+                    esc_attr($product['id']),
+                    esc_html($product['name']),
+                    esc_html($product['sku']),
+                    esc_html(number_format((float)$product['price'], 2))
+                );
+            }
+        }
+
+        $html .= '</tbody></table>';
+
+        error_log('Sending response with HTML table');
+        wp_send_json_success(array('html' => $html));
+    }
+
+    /**
+     * AJAX handler for exporting selected products to Odoo
+     */
+    public function ajax_export_selected_products() {
+        error_log('OdooFlow: Starting product export');
+        
+        // Use consistent nonce verification
+        if (!check_ajax_referer('odooflow_ajax_nonce', 'nonce', false)) {
+            error_log('OdooFlow: Nonce verification failed for export_selected_products');
+            wp_send_json_error(array('message' => __('Security check failed. Please refresh the page and try again.', 'odooflow')));
+            return;
+        }
+
+        if (!isset($_POST['product_ids']) || !is_array($_POST['product_ids'])) {
+            error_log('OdooFlow: No products selected for export');
+            wp_send_json_error(array('message' => __('No products selected.', 'odooflow')));
+            return;
+        }
+
+        $product_ids = array_map('intval', $_POST['product_ids']);
+        $selected_fields = isset($_POST['fields']) ? array_map('sanitize_text_field', $_POST['fields']) : array('name', 'default_code', 'list_price');
+        
+        error_log('OdooFlow: Exporting products - IDs: ' . print_r($product_ids, true));
+        error_log('OdooFlow: Selected fields - ' . print_r($selected_fields, true));
+
+        $created_count = 0;
+        $updated_count = 0;
+        $failed_exports = array();
+        $processed_products = array();
+
+        foreach ($product_ids as $product_id) {
+            $product = wc_get_product($product_id);
+            if (!$product) {
+                $failed_exports[] = array(
+                    'id' => $product_id,
+                    'error' => 'Product not found'
+                );
+                continue;
+            }
+
+            $result = $this->export_product_to_odoo($product, $selected_fields);
+            
+            if (is_wp_error($result)) {
+                error_log('OdooFlow: Failed to export product - ' . $result->get_error_message());
+                $failed_exports[] = array(
+                    'name' => $product->get_name(),
+                    'error' => $result->get_error_message()
+                );
+            } else {
+                if ($result['created']) {
+                    $created_count++;
+                    $processed_products[] = array(
+                        'name' => $product->get_name(),
+                        'status' => 'created'
+                    );
+                } else {
+                    $updated_count++;
+                    $processed_products[] = array(
+                        'name' => $product->get_name(),
+                        'status' => 'updated'
+                    );
+                }
+                // Store the Odoo product ID in WooCommerce
+                update_post_meta($product_id, '_odoo_product_id', $result['odoo_id']);
+            }
+        }
+
+        // Build response message
+        $message_parts = array();
+        if ($created_count > 0) {
+            $message_parts[] = sprintf(_n('%d product created', '%d products created', $created_count, 'odooflow'), $created_count);
+        }
+        if ($updated_count > 0) {
+            $message_parts[] = sprintf(_n('%d product updated', '%d products updated', $updated_count, 'odooflow'), $updated_count);
+        }
+        if (count($failed_exports) > 0) {
+            $message_parts[] = sprintf(_n('%d product failed', '%d products failed', count($failed_exports), 'odooflow'), count($failed_exports));
+        }
+
+        $response = array(
+            'created' => $created_count,
+            'updated' => $updated_count,
+            'failed' => $failed_exports,
+            'processed' => $processed_products,
+            'message' => implode(', ', $message_parts) . '.',
+            'details' => $this->get_detailed_export_message($processed_products, $failed_exports)
+        );
+
+        error_log('OdooFlow: Export complete - ' . print_r($response, true));
+        wp_send_json_success($response);
+    }
+
+    /**
+     * Export a single product to Odoo
+     */
+    private function export_product_to_odoo($product, $selected_fields) {
+        $odoo_url = get_option('odooflow_odoo_url', '');
+        $username = get_option('odooflow_username', '');
+        $api_key = get_option('odooflow_api_key', '');
+        $database = get_option('odooflow_database', '');
+
+        if (empty($odoo_url) || empty($username) || empty($api_key) || empty($database)) {
+            return new WP_Error('missing_credentials', __('Please configure all Odoo connection settings first.', 'odooflow'));
+        }
+
+        // First authenticate to get the user ID
+        $auth_request = xmlrpc_encode_request('authenticate', array(
+            $database,
+            $username,
+            $api_key,
+            array()
+        ));
+
+        $auth_response = wp_remote_post(rtrim($odoo_url, '/') . '/xmlrpc/2/common', [
+            'body' => $auth_request,
+            'headers' => ['Content-Type' => 'text/xml'],
+            'timeout' => 30,
+            'sslverify' => false
+        ]);
+
+        if (is_wp_error($auth_response)) {
+            return new WP_Error('connection_error', __('Error connecting to Odoo server.', 'odooflow'));
+        }
+
+        $auth_body = wp_remote_retrieve_body($auth_response);
+        $auth_xml = simplexml_load_string($auth_body);
+        if ($auth_xml === false) {
+            return new WP_Error('parse_error', __('Error parsing authentication response.', 'odooflow'));
+        }
+
+        $auth_data = json_decode(json_encode($auth_xml), true);
+        if (isset($auth_data['fault'])) {
+            return new WP_Error('auth_failed', __('Authentication failed. Please check your credentials.', 'odooflow'));
+        }
+
+        $uid = $auth_data['params']['param']['value']['int'] ?? null;
+        if (!$uid) {
+            return new WP_Error('no_uid', __('Could not get user ID from authentication response.', 'odooflow'));
+        }
+
+        // Prepare product data for Odoo
+        $product_data = array();
+
+        // Always include name and default_code (SKU)
+        $product_data['name'] = $product->get_name();
+        $product_data['default_code'] = $product->get_sku();
+
+        // Add other fields based on selection
+        if (in_array('list_price', $selected_fields)) {
+            $product_data['list_price'] = $product->get_regular_price();
+        }
+        if (in_array('description', $selected_fields)) {
+            $product_data['description'] = $product->get_description();
+        }
+        if (in_array('qty_available', $selected_fields)) {
+            $product_data['qty_available'] = $product->get_stock_quantity();
+        }
+        if (in_array('weight', $selected_fields)) {
+            $product_data['weight'] = $product->get_weight();
+        }
+
+        // Check if product already exists in Odoo
+        $odoo_id = get_post_meta($product->get_id(), '_odoo_product_id', true);
+        $created = false;
+
+        if ($odoo_id) {
+            // Update existing product
+            $update_request = xmlrpc_encode_request('execute_kw', array(
+                $database,
+                $uid,
+                $api_key,
+                'product.template',
+                'write',
+                array(array($odoo_id), $product_data)
+            ));
+
+            $update_response = wp_remote_post(rtrim($odoo_url, '/') . '/xmlrpc/2/object', [
+                'body' => $update_request,
+                'headers' => ['Content-Type' => 'text/xml'],
+                'timeout' => 30,
+                'sslverify' => false
+            ]);
+
+            if (is_wp_error($update_response)) {
+                return new WP_Error('update_error', __('Error updating product in Odoo.', 'odooflow'));
+            }
+        } else {
+            // Create new product
+            $create_request = xmlrpc_encode_request('execute_kw', array(
+                $database,
+                $uid,
+                $api_key,
+                'product.template',
+                'create',
+                array($product_data)
+            ));
+
+            $create_response = wp_remote_post(rtrim($odoo_url, '/') . '/xmlrpc/2/object', [
+                'body' => $create_request,
+                'headers' => ['Content-Type' => 'text/xml'],
+                'timeout' => 30,
+                'sslverify' => false
+            ]);
+
+            if (is_wp_error($create_response)) {
+                return new WP_Error('create_error', __('Error creating product in Odoo.', 'odooflow'));
+            }
+
+            $create_body = wp_remote_retrieve_body($create_response);
+            $create_xml = simplexml_load_string($create_body);
+            if ($create_xml === false) {
+                return new WP_Error('parse_error', __('Error parsing create response.', 'odooflow'));
+            }
+
+            $create_data = json_decode(json_encode($create_xml), true);
+            if (isset($create_data['fault'])) {
+                return new WP_Error('create_failed', __('Failed to create product in Odoo.', 'odooflow'));
+            }
+
+            $odoo_id = $create_data['params']['param']['value']['int'] ?? null;
+            $created = true;
+        }
+
+        return array(
+            'odoo_id' => $odoo_id,
+            'created' => $created
+        );
+    }
+
+    /**
+     * Generate a detailed export message
+     */
+    private function get_detailed_export_message($processed_products, $failed_exports) {
+        $details = '';
+        
+        // Group products by status
+        $created = array_filter($processed_products, function($p) { return $p['status'] === 'created'; });
+        $updated = array_filter($processed_products, function($p) { return $p['status'] === 'updated'; });
+        
+        // Add created products details
+        if (!empty($created)) {
+            $details .= "\n\n" . __('Created Products:', 'odooflow') . "\n";
+            foreach ($created as $product) {
+                $details .= '- ' . $product['name'] . "\n";
+            }
+        }
+        
+        // Add updated products details
+        if (!empty($updated)) {
+            $details .= "\n" . __('Updated Products:', 'odooflow') . "\n";
+            foreach ($updated as $product) {
+                $details .= '- ' . $product['name'] . "\n";
+            }
+        }
+        
+        // Add failed products details
+        if (!empty($failed_exports)) {
+            $details .= "\n" . __('Failed Products:', 'odooflow') . "\n";
+            foreach ($failed_exports as $product) {
+                $details .= '- ' . $product['name'] . ': ' . $product['error'] . "\n";
+            }
+        }
+        
+        return $details;
     }
 }
 
