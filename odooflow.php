@@ -75,6 +75,8 @@ class OdooFlow {
         add_action('wp_ajax_get_woo_products', array($this, 'ajax_get_woo_products'));
         add_action('wp_ajax_export_selected_products', array($this, 'ajax_export_selected_products'));
         add_action('manage_posts_extra_tablenav', array($this, 'add_odoo_count_button'), 20);
+        add_action('wp_ajax_import_odoo_customers', array($this, 'ajax_import_odoo_customers'));
+        add_action('wp_ajax_export_woo_customers', array($this, 'ajax_export_woo_customers'));
     }
 
     /**
@@ -132,11 +134,12 @@ class OdooFlow {
      * Enqueue admin scripts
      */
     public function enqueue_admin_scripts($hook) {
-        if ('toplevel_page_odooflow-settings' !== $hook && 'edit.php' !== $hook) {
+        // Load on OdooFlow settings page, products page, and users page
+        if ('toplevel_page_odooflow-settings' !== $hook && 'edit.php' !== $hook && 'users.php' !== $hook) {
             return;
         }
 
-        // Only load on products page
+        // Only load on products page if we're viewing products
         if ('edit.php' === $hook && (!isset($_GET['post_type']) || $_GET['post_type'] !== 'product')) {
             return;
         }
@@ -478,6 +481,25 @@ class OdooFlow {
                 <?php endif; ?>
             </div>
 
+            <div class="odoo-sync-wrapper" style="margin-top: 20px; padding: 20px; background: #fff; border: 1px solid #ccd0d4; box-shadow: 0 1px 1px rgba(0,0,0,.04);">
+                <h2><?php _e('Customer Synchronization', 'odooflow'); ?></h2>
+                
+                <div class="sync-section">
+                    <h3><?php _e('Customers Sync', 'odooflow'); ?></h3>
+                    <p class="description"><?php _e('Import customers from Odoo to WooCommerce or export WooCommerce customers to Odoo.', 'odooflow'); ?></p>
+                    <div class="button-group">
+                        <button type="button" class="button odooflow-import-customers">
+                            <span class="dashicons dashicons-download" style="margin: 4px 5px 0 -2px;"></span>
+                            <?php _e('Import Customers from Odoo', 'odooflow'); ?>
+                        </button>
+                        <button type="button" class="button odooflow-export-customers">
+                            <span class="dashicons dashicons-upload" style="margin: 4px 5px 0 -2px;"></span>
+                            <?php _e('Export Customers to Odoo', 'odooflow'); ?>
+                        </button>
+                    </div>
+                </div>
+            </div>
+
             <div id="odoo-modules-list" class="odoo-modules-wrapper" style="margin-top: 20px;">
                 <h2><?php _e('Installed Modules', 'odooflow'); ?></h2>
                 <div class="modules-content">
@@ -677,9 +699,11 @@ class OdooFlow {
         ?>
         <div class="alignleft actions">
             <button type="button" class="button-secondary get-odoo-products">
-                <?php _e('Get Odoo Products', 'odooflow'); ?>
+                <span class="dashicons dashicons-download" style="margin: 4px 5px 0 -2px;"></span>
+                <?php _e('Import from Odoo', 'odooflow'); ?>
             </button>
             <button type="button" class="button-secondary export-to-odoo">
+                <span class="dashicons dashicons-upload" style="margin: 4px 5px 0 -2px;"></span>
                 <?php _e('Export to Odoo', 'odooflow'); ?>
             </button>
         </div>
@@ -1803,6 +1827,456 @@ class OdooFlow {
         }
         
         return $details;
+    }
+
+    /**
+     * Add customer sync buttons to the WooCommerce customers page
+     */
+    public function add_customer_sync_buttons($which) {
+        $screen = get_current_screen();
+        if ($screen->id !== 'users') {
+            return;
+        }
+
+        if ($which === 'top') {
+            ?>
+            <div class="alignleft actions odooflow-customer-actions">
+                <button type="button" class="button odooflow-import-customers">
+                    <span class="dashicons dashicons-download" style="margin: 4px 5px 0 -2px;"></span>
+                    <?php _e('Import from Odoo', 'odooflow'); ?>
+                </button>
+                <button type="button" class="button odooflow-export-customers">
+                    <span class="dashicons dashicons-upload" style="margin: 4px 5px 0 -2px;"></span>
+                    <?php _e('Export to Odoo', 'odooflow'); ?>
+                </button>
+            </div>
+            <?php
+        }
+    }
+
+    /**
+     * AJAX handler for importing customers from Odoo
+     */
+    public function ajax_import_odoo_customers() {
+        if (!check_ajax_referer('odooflow_ajax_nonce', 'nonce', false)) {
+            wp_send_json_error(array('message' => __('Security check failed.', 'odooflow')));
+            return;
+        }
+
+        if (!current_user_can('manage_woocommerce')) {
+            wp_send_json_error(array('message' => __('Permission denied.', 'odooflow')));
+            return;
+        }
+
+        $odoo_url = get_option('odooflow_odoo_url', '');
+        $username = get_option('odooflow_username', '');
+        $api_key = get_option('odooflow_api_key', '');
+        $database = get_option('odooflow_database', '');
+
+        if (empty($odoo_url) || empty($username) || empty($api_key) || empty($database)) {
+            wp_send_json_error(array('message' => __('Odoo connection settings are incomplete.', 'odooflow')));
+            return;
+        }
+
+        try {
+            // Get customers from Odoo
+            $common_endpoint = rtrim($odoo_url, '/') . '/xmlrpc/2/common';
+            $object_endpoint = rtrim($odoo_url, '/') . '/xmlrpc/2/object';
+
+            // Authenticate
+            $auth_request = xmlrpc_encode_request('authenticate', array(
+                $database,
+                $username,
+                $api_key,
+                array()
+            ));
+
+            $auth_response = wp_remote_post($common_endpoint, [
+                'body' => $auth_request,
+                'headers' => ['Content-Type' => 'text/xml'],
+                'timeout' => 30,
+                'sslverify' => false
+            ]);
+
+            if (is_wp_error($auth_response)) {
+                throw new Exception(__('Failed to connect to Odoo server.', 'odooflow'));
+            }
+
+            $uid = xmlrpc_decode(wp_remote_retrieve_body($auth_response));
+            if (!is_numeric($uid)) {
+                throw new Exception(__('Authentication failed.', 'odooflow'));
+            }
+
+            // Get customers from Odoo with more detailed information
+            $method_call = xmlrpc_encode_request('execute_kw', array(
+                $database,
+                $uid,
+                $api_key,
+                'res.partner',
+                'search_read',
+                array(array(array('customer_rank', '>', 0))), // Only get customers
+                array(
+                    'fields' => array(
+                        'name',
+                        'email',
+                        'phone',
+                        'street',
+                        'street2',
+                        'city',
+                        'zip',
+                        'country_id',
+                        'state_id',
+                        'vat',
+                        'mobile',
+                        'company_name'
+                    ),
+                    'limit' => 500
+                )
+            ));
+
+            $response = wp_remote_post($object_endpoint, [
+                'body' => $method_call,
+                'headers' => ['Content-Type' => 'text/xml'],
+                'timeout' => 30,
+                'sslverify' => false
+            ]);
+
+            if (is_wp_error($response)) {
+                throw new Exception(__('Failed to fetch customers from Odoo.', 'odooflow'));
+            }
+
+            $customers = xmlrpc_decode(wp_remote_retrieve_body($response));
+            if (!is_array($customers)) {
+                throw new Exception(__('Invalid response from Odoo.', 'odooflow'));
+            }
+
+            $imported = 0;
+            $skipped = 0;
+            $failed = 0;
+
+            foreach ($customers as $customer) {
+                if (empty($customer['email'])) {
+                    $failed++;
+                    continue;
+                }
+
+                // Check if user exists by email
+                $existing_user = get_user_by('email', $customer['email']);
+                
+                if ($existing_user) {
+                    // Update existing customer
+                    $this->update_wc_customer($existing_user->ID, $customer);
+                    $skipped++;
+                    continue;
+                }
+
+                // Create new user
+                $username = sanitize_user(current(explode('@', $customer['email'])));
+                $unique_username = $username;
+                $counter = 1;
+                while (username_exists($unique_username)) {
+                    $unique_username = $username . $counter;
+                    $counter++;
+                }
+
+                // Split name into first and last name
+                $name_parts = explode(' ', $customer['name']);
+                $first_name = array_shift($name_parts);
+                $last_name = implode(' ', $name_parts);
+
+                $user_data = array(
+                    'user_login' => $unique_username,
+                    'user_email' => $customer['email'],
+                    'user_pass' => wp_generate_password(),
+                    'first_name' => $first_name,
+                    'last_name' => $last_name,
+                    'display_name' => $customer['name'],
+                    'role' => 'customer'
+                );
+
+                $user_id = wp_insert_user($user_data);
+                if (is_wp_error($user_id)) {
+                    $failed++;
+                    continue;
+                }
+
+                // Create WooCommerce customer
+                $wc_customer = new WC_Customer($user_id);
+                
+                // Set billing information
+                $wc_customer->set_billing_first_name($first_name);
+                $wc_customer->set_billing_last_name($last_name);
+                $wc_customer->set_billing_company($customer['company_name'] ?? '');
+                $wc_customer->set_billing_address_1($customer['street'] ?? '');
+                $wc_customer->set_billing_address_2($customer['street2'] ?? '');
+                $wc_customer->set_billing_city($customer['city'] ?? '');
+                $wc_customer->set_billing_postcode($customer['zip'] ?? '');
+                $wc_customer->set_billing_phone($customer['phone'] ?? $customer['mobile'] ?? '');
+                $wc_customer->set_billing_email($customer['email']);
+
+                // Set shipping information (same as billing by default)
+                $wc_customer->set_shipping_first_name($first_name);
+                $wc_customer->set_shipping_last_name($last_name);
+                $wc_customer->set_shipping_company($customer['company_name'] ?? '');
+                $wc_customer->set_shipping_address_1($customer['street'] ?? '');
+                $wc_customer->set_shipping_address_2($customer['street2'] ?? '');
+                $wc_customer->set_shipping_city($customer['city'] ?? '');
+                $wc_customer->set_shipping_postcode($customer['zip'] ?? '');
+
+                // Save the customer
+                $wc_customer->save();
+                
+                // Store Odoo ID for future reference
+                update_user_meta($user_id, '_odoo_customer_id', $customer['id']);
+                
+                $imported++;
+            }
+
+            wp_send_json_success(array(
+                'message' => sprintf(
+                    __('Import completed. Imported: %d, Updated: %d, Failed: %d', 'odooflow'),
+                    $imported,
+                    $skipped,
+                    $failed
+                )
+            ));
+
+        } catch (Exception $e) {
+            wp_send_json_error(array('message' => $e->getMessage()));
+        }
+    }
+
+    /**
+     * Update WooCommerce customer data
+     */
+    private function update_wc_customer($user_id, $odoo_customer) {
+        try {
+            $wc_customer = new WC_Customer($user_id);
+            
+            // Split name into first and last name
+            $name_parts = explode(' ', $odoo_customer['name']);
+            $first_name = array_shift($name_parts);
+            $last_name = implode(' ', $name_parts);
+
+            // Update billing information
+            $wc_customer->set_billing_first_name($first_name);
+            $wc_customer->set_billing_last_name($last_name);
+            $wc_customer->set_billing_company($odoo_customer['company_name'] ?? '');
+            $wc_customer->set_billing_address_1($odoo_customer['street'] ?? '');
+            $wc_customer->set_billing_address_2($odoo_customer['street2'] ?? '');
+            $wc_customer->set_billing_city($odoo_customer['city'] ?? '');
+            $wc_customer->set_billing_postcode($odoo_customer['zip'] ?? '');
+            $wc_customer->set_billing_phone($odoo_customer['phone'] ?? $odoo_customer['mobile'] ?? '');
+            $wc_customer->set_billing_email($odoo_customer['email']);
+
+            // Update shipping information
+            $wc_customer->set_shipping_first_name($first_name);
+            $wc_customer->set_shipping_last_name($last_name);
+            $wc_customer->set_shipping_company($odoo_customer['company_name'] ?? '');
+            $wc_customer->set_shipping_address_1($odoo_customer['street'] ?? '');
+            $wc_customer->set_shipping_address_2($odoo_customer['street2'] ?? '');
+            $wc_customer->set_shipping_city($odoo_customer['city'] ?? '');
+            $wc_customer->set_shipping_postcode($odoo_customer['zip'] ?? '');
+
+            // Save the customer
+            $wc_customer->save();
+
+            // Update Odoo ID
+            update_user_meta($user_id, '_odoo_customer_id', $odoo_customer['id']);
+
+            return true;
+        } catch (Exception $e) {
+            error_log('OdooFlow: Error updating customer - ' . $e->getMessage());
+            return false;
+        }
+    }
+
+    /**
+     * AJAX handler for exporting customers to Odoo
+     */
+    public function ajax_export_woo_customers() {
+        if (!check_ajax_referer('odooflow_ajax_nonce', 'nonce', false)) {
+            wp_send_json_error(array('message' => __('Security check failed.', 'odooflow')));
+            return;
+        }
+
+        if (!current_user_can('manage_woocommerce')) {
+            wp_send_json_error(array('message' => __('Permission denied.', 'odooflow')));
+            return;
+        }
+
+        $odoo_url = get_option('odooflow_odoo_url', '');
+        $username = get_option('odooflow_username', '');
+        $api_key = get_option('odooflow_api_key', '');
+        $database = get_option('odooflow_database', '');
+
+        if (empty($odoo_url) || empty($username) || empty($api_key) || empty($database)) {
+            wp_send_json_error(array('message' => __('Odoo connection settings are incomplete.', 'odooflow')));
+            return;
+        }
+
+        try {
+            // Authenticate with Odoo
+            $common_endpoint = rtrim($odoo_url, '/') . '/xmlrpc/2/common';
+            $object_endpoint = rtrim($odoo_url, '/') . '/xmlrpc/2/object';
+
+            $auth_request = xmlrpc_encode_request('authenticate', array(
+                $database,
+                $username,
+                $api_key,
+                array()
+            ));
+
+            $auth_response = wp_remote_post($common_endpoint, [
+                'body' => $auth_request,
+                'headers' => ['Content-Type' => 'text/xml'],
+                'timeout' => 30,
+                'sslverify' => false
+            ]);
+
+            if (is_wp_error($auth_response)) {
+                throw new Exception(__('Failed to connect to Odoo server.', 'odooflow'));
+            }
+
+            $uid = xmlrpc_decode(wp_remote_retrieve_body($auth_response));
+            if (!is_numeric($uid)) {
+                throw new Exception(__('Authentication failed.', 'odooflow'));
+            }
+
+            // Get WooCommerce customers using WP_User_Query
+            $args = array(
+                'role' => 'customer',
+                'orderby' => 'ID',
+                'order' => 'ASC',
+                'number' => 500,
+                'fields' => 'ID'
+            );
+            
+            $user_query = new WP_User_Query($args);
+            $customer_ids = $user_query->get_results();
+            
+            $exported = 0;
+            $skipped = 0;
+            $failed = 0;
+            $updated = 0;
+
+            foreach ($customer_ids as $customer_id) {
+                $wc_customer = new WC_Customer($customer_id);
+                
+                if (!$wc_customer || empty($wc_customer->get_email())) {
+                    $failed++;
+                    continue;
+                }
+
+                // Check if customer exists in Odoo
+                $search_request = xmlrpc_encode_request('execute_kw', array(
+                    $database,
+                    $uid,
+                    $api_key,
+                    'res.partner',
+                    'search',
+                    array(array(array('email', '=', $wc_customer->get_email())))
+                ));
+
+                $search_response = wp_remote_post($object_endpoint, [
+                    'body' => $search_request,
+                    'headers' => ['Content-Type' => 'text/xml'],
+                    'timeout' => 30,
+                    'sslverify' => false
+                ]);
+
+                if (is_wp_error($search_response)) {
+                    $failed++;
+                    continue;
+                }
+
+                $existing_ids = xmlrpc_decode(wp_remote_retrieve_body($search_response));
+
+                // Prepare customer data
+                $customer_data = array(
+                    'name' => $wc_customer->get_first_name() . ' ' . $wc_customer->get_last_name(),
+                    'email' => $wc_customer->get_email(),
+                    'phone' => $wc_customer->get_billing_phone(),
+                    'street' => $wc_customer->get_billing_address_1(),
+                    'street2' => $wc_customer->get_billing_address_2(),
+                    'city' => $wc_customer->get_billing_city(),
+                    'zip' => $wc_customer->get_billing_postcode(),
+                    'company_name' => $wc_customer->get_billing_company(),
+                    'customer_rank' => 1,
+                    'type' => 'contact'
+                );
+
+                if (!empty($existing_ids)) {
+                    // Update existing customer in Odoo
+                    $update_request = xmlrpc_encode_request('execute_kw', array(
+                        $database,
+                        $uid,
+                        $api_key,
+                        'res.partner',
+                        'write',
+                        array(array($existing_ids[0]), $customer_data)
+                    ));
+
+                    $update_response = wp_remote_post($object_endpoint, [
+                        'body' => $update_request,
+                        'headers' => ['Content-Type' => 'text/xml'],
+                        'timeout' => 30,
+                        'sslverify' => false
+                    ]);
+
+                    if (!is_wp_error($update_response)) {
+                        update_user_meta($customer_id, '_odoo_customer_id', $existing_ids[0]);
+                        $updated++;
+                    } else {
+                        $failed++;
+                    }
+                    continue;
+                }
+
+                // Create new customer in Odoo
+                $create_request = xmlrpc_encode_request('execute_kw', array(
+                    $database,
+                    $uid,
+                    $api_key,
+                    'res.partner',
+                    'create',
+                    array($customer_data)
+                ));
+
+                $create_response = wp_remote_post($object_endpoint, [
+                    'body' => $create_request,
+                    'headers' => ['Content-Type' => 'text/xml'],
+                    'timeout' => 30,
+                    'sslverify' => false
+                ]);
+
+                if (is_wp_error($create_response)) {
+                    $failed++;
+                    continue;
+                }
+
+                $odoo_id = xmlrpc_decode(wp_remote_retrieve_body($create_response));
+                if (is_numeric($odoo_id)) {
+                    update_user_meta($customer_id, '_odoo_customer_id', $odoo_id);
+                    $exported++;
+                } else {
+                    $failed++;
+                }
+            }
+
+            wp_send_json_success(array(
+                'message' => sprintf(
+                    __('Export completed. Exported: %d, Updated: %d, Skipped: %d, Failed: %d', 'odooflow'),
+                    $exported,
+                    $updated,
+                    $skipped,
+                    $failed
+                )
+            ));
+
+        } catch (Exception $e) {
+            wp_send_json_error(array('message' => $e->getMessage()));
+        }
     }
 }
 

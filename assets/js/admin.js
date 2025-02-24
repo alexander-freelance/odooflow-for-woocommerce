@@ -305,4 +305,227 @@ jQuery(document).ready(function($) {
             }
         });
     });
+
+    // Export to Odoo button click handler
+    $('.export-to-odoo').on('click', function() {
+        const exportModal = $('#odoo-export-modal');
+        const wooProductsList = $('.woo-products-list');
+        const loadingOverlay = $('<div class="loading-overlay"><div class="loading-spinner"></div></div>');
+        wooProductsList.append(loadingOverlay);
+        exportModal.show();
+        
+        // Get selected fields
+        const selectedFields = getSelectedExportFields();
+        
+        // Debug log the request data
+        const requestData = {
+            action: 'get_woo_products',
+            nonce: odooflow.nonce,
+            fields: selectedFields
+        };
+        console.log('Sending request with data:', requestData);
+        
+        $.ajax({
+            url: odooflow.ajax_url,
+            type: 'POST',
+            data: requestData,
+            success: function(response) {
+                console.log('Response:', response);
+                if (response.success) {
+                    wooProductsList.html(response.data.html);
+                } else {
+                    const errorMessage = response.data ? response.data.message : 'Unknown error occurred';
+                    wooProductsList.html('<div class="notice notice-error"><p>' + errorMessage + '</p></div>');
+                    console.error('Error response:', response);
+                }
+            },
+            error: function(jqXHR, textStatus, errorThrown) {
+                console.error('AJAX error details:', {
+                    status: jqXHR.status,
+                    statusText: jqXHR.statusText,
+                    responseText: jqXHR.responseText,
+                    textStatus: textStatus,
+                    errorThrown: errorThrown
+                });
+                wooProductsList.html('<div class="notice notice-error"><p>Error fetching products. Status: ' + textStatus + '</p><p>Details: ' + errorThrown + '</p></div>');
+            },
+            complete: function() {
+                loadingOverlay.remove();
+            }
+        });
+    });
+
+    // Helper function to get selected export fields
+    function getSelectedExportFields() {
+        const fields = $('input[name="export_fields[]"]:checked').map(function() {
+            return this.value;
+        }).get();
+        
+        // Ensure required fields are always included
+        if (!fields.includes('name')) {
+            fields.push('name');
+        }
+        if (!fields.includes('default_code')) {
+            fields.push('default_code');
+        }
+        
+        return fields;
+    }
+
+    // Export modal close handler
+    $('#odoo-export-modal .odoo-modal-close').on('click', function() {
+        $('#odoo-export-modal').hide();
+    });
+
+    // Export field selection handlers
+    $('.select-all-export-fields').on('click', function() {
+        $('input[name="export_fields[]"]:not(:disabled)').prop('checked', true);
+    });
+    
+    $('.deselect-all-export-fields').on('click', function() {
+        $('input[name="export_fields[]"]:not(:disabled):not([value="name"]):not([value="default_code"])').prop('checked', false);
+    });
+    
+    // WooCommerce product selection handlers
+    $(document).on('click', '#select-all-woo-products', function() {
+        $('input[name="export_products[]"]').prop('checked', this.checked);
+    });
+    
+    $('.select-all-woo-products').on('click', function() {
+        $('input[name="export_products[]"]').prop('checked', true);
+        $('#select-all-woo-products').prop('checked', true);
+    });
+    
+    $('.deselect-all-woo-products').on('click', function() {
+        $('input[name="export_products[]"]').prop('checked', false);
+        $('#select-all-woo-products').prop('checked', false);
+    });
+    
+    // Export selected products
+    $('.export-selected-products').on('click', function() {
+        const selectedProducts = $('input[name="export_products[]"]:checked').map(function() {
+            return parseInt(this.value, 10);
+        }).get();
+        
+        if (selectedProducts.length === 0) {
+            alert('Please select at least one product to export');
+            return;
+        }
+        
+        const selectedFields = getSelectedExportFields();
+        
+        if (selectedFields.length <= 2) {
+            alert('Please select at least one additional field to export');
+            return;
+        }
+        
+        const loadingOverlay = $('<div class="loading-overlay"><div class="loading-spinner"></div></div>');
+        $('.odoo-modal-content').append(loadingOverlay);
+
+        // Debug log the request data
+        const requestData = {
+            action: 'export_selected_products',
+            nonce: odooflow.nonce,
+            product_ids: selectedProducts,
+            fields: selectedFields
+        };
+        console.log('Sending export request with data:', requestData);
+        
+        $.ajax({
+            url: odooflow.ajax_url,
+            type: 'POST',
+            data: requestData,
+            success: function(response) {
+                console.log('Export response:', response);
+                if (response.success) {
+                    let message = response.data.message;
+                    if (response.data.details) {
+                        message += '\n\nDetails:' + response.data.details;
+                    }
+                    alert(message);
+                    $('#odoo-export-modal').hide();
+                } else {
+                    const errorMessage = response.data ? response.data.message : 'Unknown error occurred';
+                    alert('Error: ' + errorMessage);
+                    console.error('Export error:', response);
+                }
+            },
+            error: function(jqXHR, textStatus, errorThrown) {
+                console.error('Export AJAX error:', {
+                    status: jqXHR.status,
+                    statusText: jqXHR.statusText,
+                    responseText: jqXHR.responseText,
+                    textStatus: textStatus,
+                    errorThrown: errorThrown
+                });
+                alert('Error exporting products. Status: ' + textStatus + '\nDetails: ' + errorThrown);
+            },
+            complete: function() {
+                loadingOverlay.remove();
+            }
+        });
+    });
+
+    // Customer sync button handlers
+    $('.odooflow-import-customers').on('click', function() {
+        const $button = $(this);
+        const $notice = $('<div class="notice notice-info is-dismissible"><p>Importing customers from Odoo...</p></div>');
+        
+        $button.prop('disabled', true);
+        $button.after($notice);
+        
+        $.ajax({
+            url: odooflow.ajax_url,
+            type: 'POST',
+            data: {
+                action: 'import_odoo_customers',
+                nonce: odooflow.nonce
+            },
+            success: function(response) {
+                $notice.removeClass('notice-info').addClass(response.success ? 'notice-success' : 'notice-error');
+                $notice.find('p').text(response.data.message);
+                if (response.success) {
+                    // Reload the page after 2 seconds to show the new customers
+                    setTimeout(function() {
+                        window.location.reload();
+                    }, 2000);
+                }
+            },
+            error: function() {
+                $notice.removeClass('notice-info').addClass('notice-error');
+                $notice.find('p').text('Error importing customers. Please try again.');
+            },
+            complete: function() {
+                $button.prop('disabled', false);
+            }
+        });
+    });
+
+    $('.odooflow-export-customers').on('click', function() {
+        const $button = $(this);
+        const $notice = $('<div class="notice notice-info is-dismissible"><p>Exporting customers to Odoo...</p></div>');
+        
+        $button.prop('disabled', true);
+        $button.after($notice);
+        
+        $.ajax({
+            url: odooflow.ajax_url,
+            type: 'POST',
+            data: {
+                action: 'export_woo_customers',
+                nonce: odooflow.nonce
+            },
+            success: function(response) {
+                $notice.removeClass('notice-info').addClass(response.success ? 'notice-success' : 'notice-error');
+                $notice.find('p').text(response.data.message);
+            },
+            error: function() {
+                $notice.removeClass('notice-info').addClass('notice-error');
+                $notice.find('p').text('Error exporting customers. Please try again.');
+            },
+            complete: function() {
+                $button.prop('disabled', false);
+            }
+        });
+    });
 }); 

@@ -394,4 +394,93 @@
 @keyframes spin {
     0% { transform: rotate(0deg); }
     100% { transform: rotate(360deg); }
+}
+
+/* Customer sync button styles */
+.odooflow-import-customers,
+.odooflow-export-customers {
+    margin-right: 10px !important;
+}
+
+.odooflow-import-customers:before,
+.odooflow-export-customers:before {
+    content: '\f316';
+    font-family: dashicons;
+    font-size: 16px;
+    line-height: 1;
+    margin-right: 5px;
+    vertical-align: text-bottom;
+}
+
+.odooflow-export-customers:before {
+    content: '\f310';
+}
+
+/* Customer sync notice styles */
+.users-php .notice {
+    margin: 5px 0 15px;
+    position: relative;
+}
+
+.users-php .notice.is-dismissible {
+    padding-right: 38px;
+}
+
+.users-php .spinner {
+    float: none;
+    margin: -3px 5px 0;
+    vertical-align: middle;
+}
+
+/* Sync Sections Styles */
+.odoo-sync-wrapper {
+    margin-top: 20px;
+}
+
+.odoo-sync-wrapper h2 {
+    margin-top: 0;
+    padding-bottom: 12px;
+    border-bottom: 1px solid #ccd0d4;
+    margin-bottom: 20px;
+}
+
+.sync-section {
+    padding: 20px;
+    background: #f8f9fa;
+    border: 1px solid #ddd;
+    border-radius: 4px;
+    margin-bottom: 20px;
+}
+
+.sync-section:last-child {
+    margin-bottom: 0;
+}
+
+.sync-section h3 {
+    margin: 0 0 10px 0;
+    padding: 0;
+    font-size: 16px;
+}
+
+.sync-section .description {
+    margin: 0 0 15px 0;
+    color: #666;
+}
+
+.button-group {
+    display: flex;
+    gap: 10px;
+    flex-wrap: wrap;
+}
+
+.button-group .button {
+    display: flex;
+    align-items: center;
+    padding: 4px 12px;
+}
+
+.button-group .button .dashicons {
+    font-size: 16px;
+    width: 16px;
+    height: 16px;
 } 
