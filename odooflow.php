@@ -1221,6 +1221,10 @@ class OdooFlow {
             return new WP_Error('missing_name', __('Product name is required.', 'odooflow'));
         }
 
+        // Get selected fields from the request
+        $selected_fields = isset($_POST['fields']) ? array_map('sanitize_text_field', $_POST['fields']) : array('name', 'default_code');
+        error_log('Selected fields for import: ' . print_r($selected_fields, true));
+
         // Check if product already exists by SKU
         $existing_product_id = wc_get_product_id_by_sku($odoo_product['default_code']);
         
@@ -1234,32 +1238,41 @@ class OdooFlow {
         }
 
         try {
-            // Set basic product data
+            // Set basic product data (name and SKU are always required)
             $product->set_name($odoo_product['name']);
             if (!empty($odoo_product['default_code'])) {
                 $product->set_sku($odoo_product['default_code']);
             }
             
-            // Set price if available
-            if (isset($odoo_product['list_price'])) {
+            // Only update price if it was selected
+            if (in_array('list_price', $selected_fields) && isset($odoo_product['list_price'])) {
+                error_log('Updating price: ' . $odoo_product['list_price']);
                 $product->set_regular_price($odoo_product['list_price']);
             }
             
-            // Set stock quantity if available
-            if (isset($odoo_product['qty_available'])) {
+            // Only update stock quantity if it was selected
+            if (in_array('qty_available', $selected_fields) && isset($odoo_product['qty_available'])) {
+                error_log('Updating stock quantity: ' . $odoo_product['qty_available']);
                 $product->set_manage_stock(true);
                 $product->set_stock_quantity($odoo_product['qty_available']);
                 $product->set_stock_status($odoo_product['qty_available'] > 0 ? 'instock' : 'outofstock');
             }
             
-            // Set description if available
-            if (!empty($odoo_product['description'])) {
+            // Only update description if it was selected
+            if (in_array('description', $selected_fields) && !empty($odoo_product['description'])) {
+                error_log('Updating description');
                 $product->set_description($odoo_product['description']);
             }
             
-            // Set weight if available
-            if (!empty($odoo_product['weight'])) {
+            // Only update weight if it was selected
+            if (in_array('weight', $selected_fields) && !empty($odoo_product['weight'])) {
+                error_log('Updating weight: ' . $odoo_product['weight']);
                 $product->set_weight($odoo_product['weight']);
+            }
+
+            // Set product status to published for new products
+            if (!$existing_product_id) {
+                $product->set_status('publish');
             }
 
             // Save the product
