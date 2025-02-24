@@ -1,0 +1,5 @@
+{
+    "require": {
+        "phpxmlrpc/polyfill-xmlrpc": "^1.0"
+    }
+}

@@ -153,22 +153,41 @@ jQuery(document).ready(function($) {
         productsList.append(loadingOverlay);
         modal.show();
         
+        // Get selected fields
+        const selectedFields = getSelectedFields();
+        
+        // Debug log the request data
+        const requestData = {
+            action: 'get_odoo_products',
+            nonce: odooflow.nonce,
+            fields: selectedFields
+        };
+        console.log('Sending request with data:', requestData);
+        
         $.ajax({
             url: odooflow.ajax_url,
             type: 'POST',
-            data: {
-                action: 'get_odoo_products_count',
-                nonce: odooflow.nonce
-            },
+            data: requestData,
             success: function(response) {
+                console.log('Response:', response);
                 if (response.success) {
                     productsList.html(response.data.html);
                 } else {
-                    productsList.html('<div class="notice notice-error"><p>' + response.data.message + '</p></div>');
+                    const errorMessage = response.data ? response.data.message : 'Unknown error occurred';
+                    productsList.html('<div class="notice notice-error"><p>' + errorMessage + '</p></div>');
+                    console.error('Error response:', response);
                 }
             },
-            error: function() {
-                productsList.html('<div class="notice notice-error"><p>Error fetching products</p></div>');
+            error: function(jqXHR, textStatus, errorThrown) {
+                console.error('AJAX error details:', {
+                    status: jqXHR.status,
+                    statusText: jqXHR.statusText,
+                    responseText: jqXHR.responseText,
+                    textStatus: textStatus,
+                    errorThrown: errorThrown,
+                    headers: jqXHR.getAllResponseHeaders()
+                });
+                productsList.html('<div class="notice notice-error"><p>Error fetching products. Status: ' + textStatus + '</p><p>Details: ' + errorThrown + '</p></div>');
             },
             complete: function() {
                 loadingOverlay.remove();
@@ -176,7 +195,34 @@ jQuery(document).ready(function($) {
         });
     });
     
-    // Select/Deselect all products
+    // Helper function to get selected fields
+    function getSelectedFields() {
+        const fields = $('input[name="import_fields[]"]:checked').map(function() {
+            return this.value;
+        }).get();
+        
+        // Ensure required fields are always included
+        if (!fields.includes('name')) {
+            fields.push('name');
+        }
+        if (!fields.includes('default_code')) {
+            fields.push('default_code');
+        }
+        
+        return fields;
+    }
+    
+    // Field selection handlers
+    $('.select-all-fields').on('click', function() {
+        $('input[name="import_fields[]"]:not(:disabled)').prop('checked', true);
+    });
+    
+    $('.deselect-all-fields').on('click', function() {
+        // Don't deselect required fields
+        $('input[name="import_fields[]"]:not(:disabled):not([value="name"]):not([value="default_code"])').prop('checked', false);
+    });
+    
+    // Product selection handlers
     $(document).on('click', '#select-all-products', function() {
         $('input[name="import_products[]"]').prop('checked', this.checked);
     });
@@ -202,18 +248,32 @@ jQuery(document).ready(function($) {
             return;
         }
         
+        const selectedFields = getSelectedFields();
+        
+        // No need to check for name-only since SKU is now required
+        if (selectedFields.length <= 2) {
+            alert('Please select at least one additional field to import');
+            return;
+        }
+        
         const loadingOverlay = $('<div class="loading-overlay"><div class="loading-spinner"></div></div>');
         $('.odoo-modal-content').append(loadingOverlay);
+
+        // Debug log the request data
+        const requestData = {
+            action: 'import_selected_products',
+            nonce: odooflow.nonce,
+            product_ids: selectedProducts,
+            fields: selectedFields
+        };
+        console.log('Sending import request with data:', requestData);
         
         $.ajax({
             url: odooflow.ajax_url,
             type: 'POST',
-            data: {
-                action: 'import_selected_products',
-                nonce: odooflow.nonce,
-                product_ids: selectedProducts
-            },
+            data: requestData,
             success: function(response) {
+                console.log('Import response:', response);
                 if (response.success) {
                     if (response.data.failed && response.data.failed.length > 0) {
                         let errorMessage = 'Some products failed to import:\n\n';
@@ -229,11 +289,20 @@ jQuery(document).ready(function($) {
                         window.location.reload();
                     }
                 } else {
-                    alert('Error: ' + response.data.message);
+                    const errorMessage = response.data ? response.data.message : 'Unknown error occurred';
+                    alert('Error: ' + errorMessage);
+                    console.error('Import error:', response);
                 }
             },
-            error: function() {
-                alert('Error importing products');
+            error: function(jqXHR, textStatus, errorThrown) {
+                console.error('Import AJAX error:', {
+                    status: jqXHR.status,
+                    statusText: jqXHR.statusText,
+                    responseText: jqXHR.responseText,
+                    textStatus: textStatus,
+                    errorThrown: errorThrown
+                });
+                alert('Error importing products. Status: ' + textStatus + '\nDetails: ' + errorThrown);
             },
             complete: function() {
                 loadingOverlay.remove();
