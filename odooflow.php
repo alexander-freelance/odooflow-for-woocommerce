@@ -1,20 +1,19 @@
 <?php
 /**
- * Plugin Name: OdooFlow for WooCommerce
- * Plugin URI: https://odooflow.com
- * Description: The most comprehensive solution for syncing between WooCommerce and Odoo
- * Version: 1.0.3
- * Author: OdooFlow
- * Author URI: https://odooflow.com
+ * Plugin Name: OdooFlow
+ * Description: WooCommerce integration with Odoo
+ * Version: 1.0.0
+ * Author: Made
+ * License: GPLv2 or later
+ * License URI: https://www.gnu.org/licenses/gpl-2.0.html
  * Text Domain: odooflow
  * Domain Path: /languages
- * Requires at least: 5.8
- * Requires PHP: 7.4
- * WC requires at least: 5.0
- * WC tested up to: 8.5
- * Woo: 12345:342928dfsfsd74e04e1182b8c7c47f63
+ * Requires at least: 5.0
+ * Requires PHP: 7.2
+ * WC requires at least: 3.0
+ * WC tested up to: 8.0
  *
- * @package OdooFlow
+ * @package odooflow
  */
 
 // Exit if accessed directly
@@ -107,7 +106,7 @@ class OdooFlow {
     public function woocommerce_missing_notice() {
         ?>
         <div class="error">
-            <p><?php _e('OdooFlow requires WooCommerce to be installed and active.', 'odooflow'); ?></p>
+            <p><?php esc_html_e('WooCommerce is required for OdooFlow to work. Please install and activate WooCommerce.', 'odooflow'); ?></p>
         </div>
         <?php
     }
@@ -433,24 +432,24 @@ class OdooFlow {
             <?php settings_errors('odooflow_messages'); ?>
 
             <div class="odoo-settings-wrapper">
-                <h2><?php _e('Connection Settings', 'odooflow'); ?></h2>
+                <h2><?php esc_html_e('Connection Settings', 'odooflow'); ?></h2>
                 <form method="post" action="">
                     <?php wp_nonce_field('odooflow_settings_nonce'); ?>
                     <table class="form-table">
                         <tr>
-                            <th><label for="odoo_instance_url"><?php _e('Odoo Instance URL', 'odooflow'); ?></label></th>
+                            <th><label for="odoo_instance_url"><?php esc_html_e('Odoo Instance URL', 'odooflow'); ?></label></th>
                             <td><input type="url" name="odoo_instance_url" id="odoo_instance_url" value="<?php echo esc_attr(get_option('odooflow_odoo_url', '')); ?>" class="regular-text"></td>
                         </tr>
                         <tr>
-                            <th><label for="odoo_username"><?php _e('Username', 'odooflow'); ?></label></th>
+                            <th><label for="odoo_username"><?php esc_html_e('Username', 'odooflow'); ?></label></th>
                             <td><input type="text" name="odoo_username" id="odoo_username" value="<?php echo esc_attr(get_option('odooflow_username', '')); ?>" class="regular-text"></td>
                         </tr>
                         <tr>
-                            <th><label for="odoo_api_key"><?php _e('API Key', 'odooflow'); ?></label></th>
+                            <th><label for="odoo_api_key"><?php esc_html_e('API Key', 'odooflow'); ?></label></th>
                             <td><input type="password" name="odoo_api_key" id="odoo_api_key" value="<?php echo esc_attr(get_option('odooflow_api_key', '')); ?>" class="regular-text"></td>
                         </tr>
                         <tr>
-                            <th><label for="odoo_database"><?php _e('Select Database', 'odooflow'); ?></label></th>
+                            <th><label for="odoo_database"><?php esc_html_e('Select Database', 'odooflow'); ?></label></th>
                             <td>
                                 <div class="odoo-database-wrapper">
                                     <div class="database-select-container">
@@ -466,12 +465,13 @@ class OdooFlow {
                                                 echo '<div class="notice notice-error"><p>' . esc_html($databases) . '</p></div>';
                                             } else {
                                                 echo '<select name="odoo_database" id="odoo_database" class="regular-text">';
-                                                echo '<option value="">' . __('Select a database', 'odooflow') . '</option>';
+                                                //echo '<option value="">' . __('Select a database', 'odooflow') . '</option>';
+                                                echo '<option value="">' . esc_html(__('Select a database', 'odooflow')) . '</option>';
                                                 foreach ($databases as $db) {
                                                     $selected = ($db === $current_db) ? 'selected' : '';
                                                     echo sprintf('<option value="%s" %s>%s</option>', 
-                                                        esc_attr($db),
-                                                        $selected,
+                                                        esc_attr($db),                                    
+                                                        esc_attr($selected), // Escaped $selected
                                                         esc_html($db)
                                                     );
                                                 }
@@ -483,10 +483,11 @@ class OdooFlow {
                                     <div class="database-controls">
                                         <label class="manual-db-toggle">
                                             <input type="checkbox" name="manual_db" id="manual_db" <?php checked($is_manual); ?>>
-                                            <?php _e('Add DB name manually', 'odooflow'); ?>
+                                           
+                                            <?php echo esc_html_e('Add DB name manually', 'odooflow'); ?>
                                         </label>
                                         <button type="button" class="button-secondary refresh-databases" <?php echo $is_manual ? 'style="display: none;"' : ''; ?>>
-                                            <?php _e('Refresh Databases', 'odooflow'); ?>
+                                            <?php echo esc_html_e('Refresh Databases', 'odooflow'); ?>
                                         </button>
                                     </div>
                                 </div>
@@ -495,11 +496,12 @@ class OdooFlow {
                     </table>
 
                     <div class="odoo-settings-actions">
-                        <?php submit_button(__('Save Settings', 'odooflow'), 'primary', 'odooflow_settings_submit', false); ?>
-                        <input type="submit" name="check_xmlrpc_status" class="button-secondary" value="<?php _e('Check XML-RPC Status', 'odooflow'); ?>">
-                        <input type="submit" name="check_odoo_version" class="button-secondary" value="<?php _e('Check Odoo Version', 'odooflow'); ?>">
+                        
+                        <?php submit_button(esc_html__('Save Settings', 'odooflow'), 'primary', 'odooflow_settings_submit', false); ?>
+                        <input type="submit" name="check_xmlrpc_status" class="button-secondary" value="<?php esc_html_e('Check XML-RPC Status', 'odooflow'); ?>">
+                        <input type="submit" name="check_odoo_version" class="button-secondary" value="<?php esc_html_e('Check Odoo Version', 'odooflow'); ?>">
                         <button type="button" class="button-secondary list-modules">
-                            <?php _e('List Modules', 'odooflow'); ?>
+                            <?php esc_html_e('List Modules', 'odooflow'); ?>
                         </button>
                     </div>
                 </form>
@@ -514,26 +516,26 @@ class OdooFlow {
             </div>
 
             <div class="odoo-sync-wrapper" style="margin-top: 20px; padding: 20px; background: #fff; border: 1px solid #ccd0d4; box-shadow: 0 1px 1px rgba(0,0,0,.04);">
-                <h2><?php _e('Customer Synchronization', 'odooflow'); ?></h2>
+                <h2><?php esc_html_e('Customer Synchronization', 'odooflow'); ?></h2>
                 
                 <div class="sync-section">
-                    <h3><?php _e('Customers Sync', 'odooflow'); ?></h3>
-                    <p class="description"><?php _e('Import customers from Odoo to WooCommerce or export WooCommerce customers to Odoo.', 'odooflow'); ?></p>
+                    <h3><?php esc_html_e('Customers Sync', 'odooflow'); ?></h3>
+                    <p class="description"><?php esc_html_e('Import customers from Odoo to WooCommerce or export WooCommerce customers to Odoo.', 'odooflow'); ?></p>
                     <div class="button-group">
                         <button type="button" class="button odooflow-import-customers">
                             <span class="dashicons dashicons-download" style="margin: 4px 5px 0 -2px;"></span>
-                            <?php _e('Import Customers from Odoo', 'odooflow'); ?>
+                            <?php esc_html_e('Import Customers from Odoo', 'odooflow'); ?>
                         </button>
                         <button type="button" class="button odooflow-export-customers">
                             <span class="dashicons dashicons-upload" style="margin: 4px 5px 0 -2px;"></span>
-                            <?php _e('Export Customers to Odoo', 'odooflow'); ?>
+                            <?php esc_html_e('Export Customers to Odoo', 'odooflow'); ?>
                         </button>
                     </div>
                 </div>
             </div>
 
             <div id="odoo-modules-list" class="odoo-modules-wrapper" style="margin-top: 20px;">
-                <h2><?php _e('Installed Modules', 'odooflow'); ?></h2>
+                <h2><?php esc_html_e('Installed Modules', 'odooflow'); ?></h2>
                 <div class="modules-content">
                     <!-- Modules will be loaded here -->
                 </div>
@@ -598,6 +600,7 @@ class OdooFlow {
                 
                 if (json_last_error() === JSON_ERROR_NONE && isset($json_data['server_version'])) {
                     return sprintf(
+                        // translators: %s is the Odoo server version (e.g., "16.0").
                         __('Connected successfully to Odoo %s', 'odooflow'),
                         $json_data['server_version']
                     );
@@ -617,6 +620,7 @@ class OdooFlow {
                 $result = xmlrpc_decode(wp_remote_retrieve_body($common_response));
                 if (is_array($result) && isset($result['server_version'])) {
                     return sprintf(
+                        // translators: %s is the Odoo server version (e.g., "16.0").
                         __('Connected successfully to Odoo %s', 'odooflow'),
                         $result['server_version']
                     );
@@ -625,6 +629,7 @@ class OdooFlow {
 
             // If we got here, the instance is not valid
             error_log('OdooFlow: Invalid Odoo instance - Version check failed');
+            // translators: %s is the Odoo server version (e.g., "16.0").
             return __('Odoo URL invalid', 'odooflow');
         }
 
@@ -640,6 +645,7 @@ class OdooFlow {
             
             if (json_last_error() === JSON_ERROR_NONE && isset($json_data['server_version'])) {
                 return sprintf(
+                    // translators: %s is the Odoo server version (e.g., "16.0").         
                     __('Connected successfully to Odoo %s', 'odooflow'),
                     $json_data['server_version']
                 );
@@ -647,6 +653,7 @@ class OdooFlow {
         }
 
         error_log('OdooFlow: Unable to verify Odoo instance');
+        // translators: %s is the Odoo server version (e.g., "16.0").
         return __('Odoo URL invalid', 'odooflow');
     }
 
@@ -798,11 +805,11 @@ class OdooFlow {
         <div class="alignleft actions">
             <button type="button" class="button-secondary get-odoo-products">
                 <span class="dashicons dashicons-download" style="margin: 4px 5px 0 -2px;"></span>
-                <?php _e('Import from Odoo', 'odooflow'); ?>
+                <?php esc_html_e('Import from Odoo', 'odooflow'); ?>
             </button>
             <button type="button" class="button-secondary export-to-odoo">
                 <span class="dashicons dashicons-upload" style="margin: 4px 5px 0 -2px;"></span>
-                <?php _e('Export to Odoo', 'odooflow'); ?>
+                <?php esc_html_e('Export to Odoo', 'odooflow'); ?>
             </button>
         </div>
 
@@ -810,61 +817,61 @@ class OdooFlow {
         <div id="odoo-products-modal" class="odoo-modal" style="display: none;">
             <div class="odoo-modal-content">
                 <div class="odoo-modal-header">
-                    <h2><?php _e('Select Products to Import', 'odooflow'); ?></h2>
+                    <h2><?php esc_html_e('Select Products to Import', 'odooflow'); ?></h2>
                     <span class="odoo-modal-close">&times;</span>
                 </div>
                 <div class="odoo-modal-body">
                     <!-- Field selection section -->
                     <div class="field-selection-section">
-                        <h3><?php _e('Select Fields to Import', 'odooflow'); ?></h3>
+                        <h3><?php esc_html_e('Select Fields to Import', 'odooflow'); ?></h3>
                         <div class="field-selection-grid">
                             <label class="field-checkbox">
                                 <input type="checkbox" name="import_fields[]" value="name" checked disabled>
                                 <span class="checkbox-custom"></span>
-                                <span class="field-label"><?php _e('Product Name', 'odooflow'); ?></span>
-                                <span class="field-required"><?php _e('(Required)', 'odooflow'); ?></span>
+                                <span class="field-label"><?php esc_html_e('Product Name', 'odooflow'); ?></span>
+                                <span class="field-required"><?php esc_html_e('(Required)', 'odooflow'); ?></span>
                             </label>
                             <label class="field-checkbox">
                                 <input type="checkbox" name="import_fields[]" value="default_code" checked disabled>
                                 <span class="checkbox-custom"></span>
-                                <span class="field-label"><?php _e('SKU', 'odooflow'); ?></span>
-                                <span class="field-required"><?php _e('(Required)', 'odooflow'); ?></span>
+                                <span class="field-label"><?php esc_html_e('SKU', 'odooflow'); ?></span>
+                                <span class="field-required"><?php esc_html_e('(Required)', 'odooflow'); ?></span>
                             </label>
                             <label class="field-checkbox">
                                 <input type="checkbox" name="import_fields[]" value="list_price" checked>
                                 <span class="checkbox-custom"></span>
-                                <span class="field-label"><?php _e('Price', 'odooflow'); ?></span>
+                                <span class="field-label"><?php esc_html_e('Price', 'odooflow'); ?></span>
                             </label>
                             <label class="field-checkbox">
                                 <input type="checkbox" name="import_fields[]" value="description">
                                 <span class="checkbox-custom"></span>
-                                <span class="field-label"><?php _e('Description', 'odooflow'); ?></span>
+                                <span class="field-label"><?php esc_html_e('Description', 'odooflow'); ?></span>
                             </label>
                             <label class="field-checkbox">
                                 <input type="checkbox" name="import_fields[]" value="image">
                                 <span class="checkbox-custom"></span>
-                                <span class="field-label"><?php _e('Product Image', 'odooflow'); ?></span>
+                                <span class="field-label"><?php esc_html_e('Product Image', 'odooflow'); ?></span>
                             </label>
                             <label class="field-checkbox">
                                 <input type="checkbox" name="import_fields[]" value="qty_available">
                                 <span class="checkbox-custom"></span>
-                                <span class="field-label"><?php _e('Stock Quantity', 'odooflow'); ?></span>
+                                <span class="field-label"><?php esc_html_e('Stock Quantity', 'odooflow'); ?></span>
                             </label>
                             <label class="field-checkbox">
                                 <input type="checkbox" name="import_fields[]" value="weight">
                                 <span class="checkbox-custom"></span>
-                                <span class="field-label"><?php _e('Weight', 'odooflow'); ?></span>
+                                <span class="field-label"><?php esc_html_e('Weight', 'odooflow'); ?></span>
                             </label>
                             <label class="field-checkbox">
                                 <input type="checkbox" name="import_fields[]" value="categ_id">
                                 <span class="checkbox-custom"></span>
-                                <span class="field-label"><?php _e('Category', 'odooflow'); ?></span>
+                                <span class="field-label"><?php esc_html_e('Category', 'odooflow'); ?></span>
                             </label>
                         </div>
                     </div>
                     
                     <div class="products-section">
-                        <h3><?php _e('Available Products', 'odooflow'); ?></h3>
+                        <h3><?php esc_html_e('Available Products', 'odooflow'); ?></h3>
                         <div class="odoo-products-list">
                             <!-- Products will be loaded here -->
                         </div>
@@ -873,20 +880,20 @@ class OdooFlow {
                 <div class="odoo-modal-footer">
                     <div class="selection-controls">
                         <button type="button" class="button select-all-products">
-                            <?php _e('Select All Products', 'odooflow'); ?>
+                            <?php esc_html_e('Select All Products', 'odooflow'); ?>
                         </button>
                         <button type="button" class="button deselect-all-products">
-                            <?php _e('Deselect All Products', 'odooflow'); ?>
+                            <?php esc_html_e('Deselect All Products', 'odooflow'); ?>
                         </button>
                         <button type="button" class="button select-all-fields">
-                            <?php _e('Select All Fields', 'odooflow'); ?>
+                            <?php esc_html_e('Select All Fields', 'odooflow'); ?>
                         </button>
                         <button type="button" class="button deselect-all-fields">
-                            <?php _e('Deselect All Fields', 'odooflow'); ?>
+                            <?php esc_html_e('Deselect All Fields', 'odooflow'); ?>
                         </button>
                     </div>
                     <button type="button" class="button-primary import-selected-products">
-                        <?php _e('Import Selected Products', 'odooflow'); ?>
+                        <?php esc_html_e('Import Selected Products', 'odooflow'); ?>
                     </button>
                 </div>
             </div>
@@ -896,51 +903,51 @@ class OdooFlow {
         <div id="odoo-export-modal" class="odoo-modal" style="display: none;">
             <div class="odoo-modal-content">
                 <div class="odoo-modal-header">
-                    <h2><?php _e('Select Products to Export', 'odooflow'); ?></h2>
+                    <h2><?php esc_html_e('Select Products to Export', 'odooflow'); ?></h2>
                     <span class="odoo-modal-close">&times;</span>
                 </div>
                 <div class="odoo-modal-body">
                     <!-- Field selection section -->
                     <div class="field-selection-section">
-                        <h3><?php _e('Select Fields to Export', 'odooflow'); ?></h3>
+                        <h3><?php esc_html_e('Select Fields to Export', 'odooflow'); ?></h3>
                         <div class="field-selection-grid">
                             <label class="field-checkbox">
                                 <input type="checkbox" name="export_fields[]" value="name" checked disabled>
                                 <span class="checkbox-custom"></span>
-                                <span class="field-label"><?php _e('Product Name', 'odooflow'); ?></span>
-                                <span class="field-required"><?php _e('(Required)', 'odooflow'); ?></span>
+                                <span class="field-label"><?php esc_html_e('Product Name', 'odooflow'); ?></span>
+                                <span class="field-required"><?php esc_html_e('(Required)', 'odooflow'); ?></span>
                             </label>
                             <label class="field-checkbox">
                                 <input type="checkbox" name="export_fields[]" value="default_code" checked disabled>
                                 <span class="checkbox-custom"></span>
-                                <span class="field-label"><?php _e('SKU', 'odooflow'); ?></span>
-                                <span class="field-required"><?php _e('(Required)', 'odooflow'); ?></span>
+                                <span class="field-label"><?php esc_html_e('SKU', 'odooflow'); ?></span>
+                                <span class="field-required"><?php esc_html_e('(Required)', 'odooflow'); ?></span>
                             </label>
                             <label class="field-checkbox">
                                 <input type="checkbox" name="export_fields[]" value="list_price" checked>
                                 <span class="checkbox-custom"></span>
-                                <span class="field-label"><?php _e('Price', 'odooflow'); ?></span>
+                                <span class="field-label"><?php esc_html_e('Price', 'odooflow'); ?></span>
                             </label>
                             <label class="field-checkbox">
                                 <input type="checkbox" name="export_fields[]" value="description">
                                 <span class="checkbox-custom"></span>
-                                <span class="field-label"><?php _e('Description', 'odooflow'); ?></span>
+                                <span class="field-label"><?php esc_html_e('Description', 'odooflow'); ?></span>
                             </label>
                             <label class="field-checkbox">
                                 <input type="checkbox" name="export_fields[]" value="qty_available">
                                 <span class="checkbox-custom"></span>
-                                <span class="field-label"><?php _e('Stock Quantity', 'odooflow'); ?></span>
+                                <span class="field-label"><?php esc_html_e('Stock Quantity', 'odooflow'); ?></span>
                             </label>
                             <label class="field-checkbox">
                                 <input type="checkbox" name="export_fields[]" value="weight">
                                 <span class="checkbox-custom"></span>
-                                <span class="field-label"><?php _e('Weight', 'odooflow'); ?></span>
+                                <span class="field-label"><?php esc_html_e('Weight', 'odooflow'); ?></span>
                             </label>
                         </div>
                     </div>
                     
                     <div class="products-section">
-                        <h3><?php _e('WooCommerce Products', 'odooflow'); ?></h3>
+                        <h3><?php esc_html_e('WooCommerce Products', 'odooflow'); ?></h3>
                         <div class="woo-products-list">
                             <!-- Products will be loaded here -->
                         </div>
@@ -949,20 +956,20 @@ class OdooFlow {
                 <div class="odoo-modal-footer">
                     <div class="selection-controls">
                         <button type="button" class="button select-all-woo-products">
-                            <?php _e('Select All Products', 'odooflow'); ?>
+                            <?php esc_html_e('Select All Products', 'odooflow'); ?>
                         </button>
                         <button type="button" class="button deselect-all-woo-products">
-                            <?php _e('Deselect All Products', 'odooflow'); ?>
+                            <?php esc_html_e('Deselect All Products', 'odooflow'); ?>
                         </button>
                         <button type="button" class="button select-all-export-fields">
-                            <?php _e('Select All Fields', 'odooflow'); ?>
+                            <?php esc_html_e('Select All Fields', 'odooflow'); ?>
                         </button>
                         <button type="button" class="button deselect-all-export-fields">
-                            <?php _e('Deselect All Fields', 'odooflow'); ?>
+                            <?php esc_html_e('Deselect All Fields', 'odooflow'); ?>
                         </button>
                     </div>
                     <button type="button" class="button-primary export-selected-products">
-                        <?php _e('Export Selected Products', 'odooflow'); ?>
+                        <?php esc_html_e('Export Selected Products', 'odooflow'); ?>
                     </button>
                 </div>
             </div>
@@ -1235,12 +1242,15 @@ class OdooFlow {
         // Build a detailed message
         $message_parts = array();
         if ($new_count > 0) {
+            // translators: %d is the number of products imported.
             $message_parts[] = sprintf(_n('%d product imported', '%d products imported', $new_count, 'odooflow'), $new_count);
         }
-        if ($updated_count > 0) {
+        if ($updated_count > 0) {   
+            // translators: %d is the number of products updated.
             $message_parts[] = sprintf(_n('%d product updated', '%d products updated', $updated_count, 'odooflow'), $updated_count);
         }
         if (count($failed_imports) > 0) {
+            // translators: %d is the number of products failed.
             $message_parts[] = sprintf(_n('%d product failed', '%d products failed', count($failed_imports), 'odooflow'), count($failed_imports));
         }
 
@@ -1269,6 +1279,7 @@ class OdooFlow {
         
         // Add imported products details
         if (!empty($imported)) {
+            // translators: %d is the number of products imported.
             $details .= "\n\n" . __('Imported Products:', 'odooflow') . "\n";
             foreach ($imported as $product) {
                 $details .= '- ' . $product['name'] . "\n";
@@ -1277,6 +1288,7 @@ class OdooFlow {
         
         // Add updated products details
         if (!empty($updated)) {
+            // translators: %d is the number of products updated.
             $details .= "\n" . __('Updated Products:', 'odooflow') . "\n";
             foreach ($updated as $product) {
                 $details .= '- ' . $product['name'] . "\n";
@@ -1285,6 +1297,7 @@ class OdooFlow {
         
         // Add failed products details
         if (!empty($failed_imports)) {
+            // translators: %d is the number of products failed.
             $details .= "\n" . __('Failed Products:', 'odooflow') . "\n";
             foreach ($failed_imports as $product) {
                 $details .= '- ' . $product['name'] . ': ' . $product['error'] . "\n";
@@ -1306,6 +1319,7 @@ class OdooFlow {
         $database = get_option('odooflow_database', '');
 
         if (empty($odoo_url) || empty($username) || empty($api_key) || empty($database)) {
+            // translators: %s is the Odoo server version (e.g., "16.0").
             return new WP_Error('missing_credentials', __('Please configure all Odoo connection settings first.', 'odooflow'));
         }
 
@@ -1342,6 +1356,7 @@ class OdooFlow {
 
         if (is_wp_error($auth_response)) {
             error_log('Authentication error: ' . $auth_response->get_error_message());
+            // translators: %s is the Odoo server version (e.g., "16.0").
             return new WP_Error('connection_error', __('Error connecting to Odoo server.', 'odooflow'));
         }
 
@@ -1349,18 +1364,21 @@ class OdooFlow {
         $auth_xml = simplexml_load_string($auth_body);
         if ($auth_xml === false) {
             error_log('Failed to parse authentication response: ' . $auth_body);
+            
             return new WP_Error('parse_error', __('Error parsing authentication response.', 'odooflow'));
         }
 
         $auth_data = json_decode(json_encode($auth_xml), true);
         if (isset($auth_data['fault'])) {
             error_log('Authentication failed: ' . print_r($auth_data['fault'], true));
+            // translators: %s is the Odoo server version (e.g., "16.0").
             return new WP_Error('auth_failed', __('Authentication failed. Please check your credentials.', 'odooflow'));
         }
 
         $uid = $auth_data['params']['param']['value']['int'] ?? null;
         if (!$uid) {
             error_log('No UID in response: ' . print_r($auth_data, true));
+            // translators: %s is the Odoo server version (e.g., "16.0").
             return new WP_Error('no_uid', __('Could not get user ID from authentication response.', 'odooflow'));
         }
 
@@ -1392,6 +1410,7 @@ class OdooFlow {
 
         if (is_wp_error($products_response)) {
             error_log('Products request error: ' . $products_response->get_error_message());
+            // translators: %s is the Odoo server version (e.g., "16.0").
             return new WP_Error('products_error', __('Error fetching products from Odoo.', 'odooflow'));
         }
 
@@ -1401,12 +1420,14 @@ class OdooFlow {
         $products_xml = simplexml_load_string($products_body);
         if ($products_xml === false) {
             error_log('Failed to parse products response: ' . $products_body);
+            // translators: %s is the Odoo server version (e.g., "16.0").
             return new WP_Error('parse_error', __('Error parsing products response.', 'odooflow'));
         }
 
         $products_data = json_decode(json_encode($products_xml), true);
         if (isset($products_data['fault'])) {
             error_log('Products fetch fault: ' . print_r($products_data['fault'], true));
+            // translators: %s is the Odoo server version (e.g., "16.0").
             return new WP_Error('products_fault', __('Error retrieving products from Odoo.', 'odooflow'));
         }
 
@@ -1551,6 +1572,7 @@ class OdooFlow {
             
             if (!$product_id) {
                 error_log('Failed to save product: ' . $odoo_product['name']);
+                // translators: %s is the product name.
                 return new WP_Error('save_failed', sprintf(__('Failed to save product: %s', 'odooflow'), $odoo_product['name']));
             }
 
@@ -1562,6 +1584,7 @@ class OdooFlow {
 
         } catch (Exception $e) {
             error_log('Error creating product: ' . $e->getMessage());
+            // translators: %s is the error message.
             return new WP_Error('creation_error', sprintf(__('Error creating product: %s', 'odooflow'), $e->getMessage()));
         }
     }
@@ -1731,12 +1754,15 @@ class OdooFlow {
         // Build response message
         $message_parts = array();
         if ($created_count > 0) {
+            // translators: %d is the number of products created.
             $message_parts[] = sprintf(_n('%d product created', '%d products created', $created_count, 'odooflow'), $created_count);
         }
         if ($updated_count > 0) {
+            // translators: %d is the number of products updated.
             $message_parts[] = sprintf(_n('%d product updated', '%d products updated', $updated_count, 'odooflow'), $updated_count);
         }
         if (count($failed_exports) > 0) {
+            // translators: %d is the number of products failed.
             $message_parts[] = sprintf(_n('%d product failed', '%d products failed', count($failed_exports), 'odooflow'), count($failed_exports));
         }
 
@@ -1763,6 +1789,7 @@ class OdooFlow {
         $database = get_option('odooflow_database', '');
 
         if (empty($odoo_url) || empty($username) || empty($api_key) || empty($database)) {
+            // translators: %s is the Odoo server version (e.g., "16.0").
             return new WP_Error('missing_credentials', __('Please configure all Odoo connection settings first.', 'odooflow'));
         }
 
@@ -1782,22 +1809,26 @@ class OdooFlow {
         ]);
 
         if (is_wp_error($auth_response)) {
+            // translators: %s is the Odoo server version (e.g., "16.0").
             return new WP_Error('connection_error', __('Error connecting to Odoo server.', 'odooflow'));
         }
 
         $auth_body = wp_remote_retrieve_body($auth_response);
         $auth_xml = simplexml_load_string($auth_body);
         if ($auth_xml === false) {
+            // translators: %s is the Odoo server version (e.g., "16.0").
             return new WP_Error('parse_error', __('Error parsing authentication response.', 'odooflow'));
         }
 
         $auth_data = json_decode(json_encode($auth_xml), true);
         if (isset($auth_data['fault'])) {
+            // translators: %s is the Odoo server version (e.g., "16.0").
             return new WP_Error('auth_failed', __('Authentication failed. Please check your credentials.', 'odooflow'));
         }
 
         $uid = $auth_data['params']['param']['value']['int'] ?? null;
         if (!$uid) {
+            // translators: %s is the Odoo server version (e.g., "16.0").
             return new WP_Error('no_uid', __('Could not get user ID from authentication response.', 'odooflow'));
         }
 
@@ -1845,6 +1876,7 @@ class OdooFlow {
             ]);
 
             if (is_wp_error($update_response)) {
+                // translators: %s is the Odoo server version (e.g., "16.0").
                 return new WP_Error('update_error', __('Error updating product in Odoo.', 'odooflow'));
             }
         } else {
@@ -1866,12 +1898,14 @@ class OdooFlow {
             ]);
 
             if (is_wp_error($create_response)) {
+                // translators: %s is the Odoo server version (e.g., "16.0").
                 return new WP_Error('create_error', __('Error creating product in Odoo.', 'odooflow'));
             }
 
             $create_body = wp_remote_retrieve_body($create_response);
             $create_xml = simplexml_load_string($create_body);
             if ($create_xml === false) {
+                // translators: %s is the Odoo server version (e.g., "16.0").
                 return new WP_Error('parse_error', __('Error parsing create response.', 'odooflow'));
             }
 
@@ -1941,11 +1975,11 @@ class OdooFlow {
             <div class="alignleft actions odooflow-customer-actions">
                 <button type="button" class="button odooflow-import-customers">
                     <span class="dashicons dashicons-download" style="margin: 4px 5px 0 -2px;"></span>
-                    <?php _e('Import from Odoo', 'odooflow'); ?>
+                    <?php esc_html_e('Import Customers from Odoo', 'odooflow'); ?>
                 </button>
                 <button type="button" class="button odooflow-export-customers">
                     <span class="dashicons dashicons-upload" style="margin: 4px 5px 0 -2px;"></span>
-                    <?php _e('Export to Odoo', 'odooflow'); ?>
+                    <?php esc_html_e('Export Customers to Odoo', 'odooflow'); ?>
                 </button>
             </div>
             <?php
@@ -2132,7 +2166,8 @@ class OdooFlow {
 
             wp_send_json_success(array(
                 'message' => sprintf(
-                    __('Import completed. Imported: %d, Updated: %d, Failed: %d', 'odooflow'),
+                    // translators: %1$d is the number of imported customers, %2$d is the number of updated customers, %3$d is the number of failed customers
+                    __('Import completed. Imported: %1$d, Updated: %2$d, Failed: %3$d', 'odooflow'),
                     $imported,
                     $skipped,
                     $failed
@@ -2364,7 +2399,8 @@ class OdooFlow {
 
             wp_send_json_success(array(
                 'message' => sprintf(
-                    __('Export completed. Exported: %d, Updated: %d, Skipped: %d, Failed: %d', 'odooflow'),
+                    // translators: %1$d is the number of exported customers, %2$d is the number of updated customers, %3$d is the number of skipped customers, %4$d is the number of failed customers
+                    __('Export completed. Exported: %1$d, Updated: %2$d, Skipped: %3$d, Failed: %4$d', 'odooflow'),
                     $exported,
                     $updated,
                     $skipped,
@@ -2407,7 +2443,8 @@ class OdooFlow {
             // Add success notice
             add_action('admin_notices', function() use ($order_id) {
                 echo '<div class="notice notice-success"><p>' . 
-                     sprintf(__('Order #%s successfully synced to Odoo', 'odooflow'), $order_id) . 
+                    // translators: %s is the order ID.
+                     esc_html(sprintf(__('Order #%s successfully synced to Odoo', 'odooflow'), $order_id))
                      '</p></div>';
             });
         }
@@ -2427,8 +2464,12 @@ class OdooFlow {
         if (empty($odoo_url) || empty($username) || empty($api_key) || empty($database)) {
             $error_message = 'Odoo connection settings are incomplete.';
             error_log('OdooFlow: ' . $error_message);
-            $order->add_order_note(__('Odoo Sync Failed: ' . $error_message, 'odooflow'));
-            return new WP_Error('missing_credentials', __($error_message, 'odooflow'));
+            //$order->add_order_note(__('Odoo Sync Failed: ' . $error_message, 'odooflow'));
+            // translators: %s is the error message explaining why the Odoo sync failed.
+            $order->add_order_note(sprintf(__('Odoo Sync Failed: %s', 'odooflow'), $error_message));
+            //return new WP_Error('missing_credentials', __($error_message, 'odooflow'));
+            // translators: %s is the specific error message detailing why credentials are missing.
+            return new WP_Error('missing_credentials', sprintf(__('Missing credentials: %s', 'odooflow'), $error_message));
         }
 
         try {
@@ -2438,7 +2479,9 @@ class OdooFlow {
             if (is_wp_error($auth_result)) {
                 $error_message = 'Authentication failed: ' . $auth_result->get_error_message();
                 error_log('OdooFlow: ' . $error_message);
-                $order->add_order_note(__('Odoo Sync Failed: ' . $error_message, 'odooflow'));
+                
+                // translators: %s is the error message explaining why the Odoo sync failed.
+                $order->add_order_note(sprintf(__('Odoo Sync Failed: %s', 'odooflow'), $error_message));
                 return $auth_result;
             }
             $uid = $auth_result;
@@ -2457,13 +2500,16 @@ class OdooFlow {
                 // Update existing order
                 $result = $this->update_odoo_order($odoo_url, $database, $uid, $api_key, $odoo_order_id, $order_data);
                 if (!is_wp_error($result)) {
+                    // translators: %s is the Odoo order ID.
                     $success_message = sprintf(__('Order successfully updated in Odoo (ID: %s)', 'odooflow'), $odoo_order_id);
                     error_log('OdooFlow: ' . $success_message);
                     $order->add_order_note($success_message);
                 } else {
                     $error_message = 'Failed to update order in Odoo: ' . $result->get_error_message();
                     error_log('OdooFlow: ' . $error_message);
-                    $order->add_order_note(__('Odoo Sync Failed: ' . $error_message, 'odooflow'));
+                    //$order->add_order_note(__('Odoo Sync Failed: ' . $error_message, 'odooflow'));
+                    // translators: %s is the error message explaining why the Odoo sync failed.
+                    $order->add_order_note(sprintf(__('Odoo Sync Failed: %s', 'odooflow'), $error_message));
                 }
             } else {
                 error_log('OdooFlow: Creating new order in Odoo');
@@ -2471,13 +2517,16 @@ class OdooFlow {
                 $result = $this->create_odoo_order($odoo_url, $database, $uid, $api_key, $order_data);
                 if (!is_wp_error($result)) {
                     update_post_meta($order->get_id(), '_odoo_order_id', $result);
+                    // translators: %s is the Odoo order ID.
                     $success_message = sprintf(__('Order successfully created in Odoo (ID: %s)', 'odooflow'), $result);
                     error_log('OdooFlow: ' . $success_message);
                     $order->add_order_note($success_message);
                 } else {
                     $error_message = 'Failed to create order in Odoo: ' . $result->get_error_message();
                     error_log('OdooFlow: ' . $error_message);
-                    $order->add_order_note(__('Odoo Sync Failed: ' . $error_message, 'odooflow'));
+                    //$order->add_order_note(__('Odoo Sync Failed: ' . $error_message, 'odooflow'));
+                     // translators: %s is the error message explaining why the Odoo sync failed.
+                    $order->add_order_note(sprintf(__('Odoo Sync Failed: %s', 'odooflow'), $error_message));
                 }
             }
 
@@ -2486,7 +2535,9 @@ class OdooFlow {
         } catch (Exception $e) {
             $error_message = 'Error syncing order to Odoo: ' . $e->getMessage();
             error_log('OdooFlow: ' . $error_message);
-            $order->add_order_note(__('Odoo Sync Failed: ' . $error_message, 'odooflow'));
+            //$order->add_order_note(__('Odoo Sync Failed: ' . $error_message, 'odooflow'));
+            // translators: %s is the error message explaining why the Odoo sync failed.
+            $order->add_order_note(sprintf(__('Odoo Sync Failed: %s', 'odooflow'), $error_message));
             return new WP_Error('sync_error', $e->getMessage());
         }
     }
@@ -2812,7 +2863,9 @@ class OdooFlow {
 
         if (is_wp_error($response)) {
             error_log('OdooFlow: Error creating order - ' . $response->get_error_message());
-            return new WP_Error('create_error', __('Error creating order in Odoo: ' . $response->get_error_message(), 'odooflow'));
+            //return new WP_Error('create_error', __('Error creating order in Odoo: ' . $response->get_error_message(), 'odooflow'));
+            // translators: %s is the error message from Odoo explaining why the order creation failed.
+            return new WP_Error('create_error', sprintf(__('Error creating order in Odoo: %s', 'odooflow'), $response->get_error_message()));
         }
 
         $result = xmlrpc_decode(wp_remote_retrieve_body($response));
@@ -2850,7 +2903,9 @@ class OdooFlow {
 
         if (is_wp_error($response)) {
             error_log('OdooFlow: Error updating order - ' . $response->get_error_message());
-            return new WP_Error('update_error', __('Error updating order in Odoo: ' . $response->get_error_message(), 'odooflow'));
+            //return new WP_Error('update_error', __('Error updating order in Odoo: ' . $response->get_error_message(), 'odooflow'));
+            // translators: %s is the error message from Odoo explaining why the order update failed.
+            return new WP_Error('update_error', sprintf(__('Error updating order in Odoo: %s', 'odooflow'), $response->get_error_message()));
         }
 
         $result = xmlrpc_decode(wp_remote_retrieve_body($response));
