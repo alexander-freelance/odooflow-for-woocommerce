@@ -1,12 +1,13 @@
 <?php
+
 /**
- * Plugin Name: OdooFlow
+ * Plugin Name: OdooFlow - Odoo Integration for WooCommerce
  * Description: WooCommerce integration with Odoo
  * Version: 1.0.0
- * Author: Made
+ * Author: boringplugins
  * License: GPLv2 or later
  * License URI: https://www.gnu.org/licenses/gpl-2.0.html
- * Text Domain: odooflow
+ * Text Domain: odooflow-odoo-integration-for-woocommerce
  * Domain Path: /languages
  * Requires at least: 5.0
  * Requires PHP: 7.2
@@ -90,6 +91,8 @@ class OdooFlow {
             }
         });
     }
+// phpcs:disable WordPress.PHP.DevelopmentFunctions.error_log_error_log
+// phpcs:disable WordPress.PHP.DevelopmentFunctions.error_log_print_r
 
     /**
      * Check WooCommerce Dependency
@@ -151,10 +154,12 @@ class OdooFlow {
             return;
         }
 
+        // phpcs:disable WordPress.Security.NonceVerification.Recommended
         // Only load on products page if we're viewing products
         if ('edit.php' === $hook && (!isset($_GET['post_type']) || $_GET['post_type'] !== 'product')) {
             return;
         }
+        // phpcs:enable WordPress.Security.NonceVerification.Recommended
 
         wp_enqueue_style('odooflow-admin', ODOOFLOW_PLUGIN_URL . 'assets/css/admin.css', array(), ODOOFLOW_VERSION);
         wp_enqueue_script('odooflow-admin', ODOOFLOW_PLUGIN_URL . 'assets/js/admin.js', array('jquery'), ODOOFLOW_VERSION, true);
@@ -357,10 +362,10 @@ class OdooFlow {
         if (isset($_POST['odooflow_settings_submit'])) {
             check_admin_referer('odooflow_settings_nonce');
 
-            $odoo_url = isset($_POST['odoo_instance_url']) ? sanitize_text_field($_POST['odoo_instance_url']) : '';
-            $username = isset($_POST['odoo_username']) ? sanitize_text_field($_POST['odoo_username']) : '';
-            $api_key = isset($_POST['odoo_api_key']) ? sanitize_text_field($_POST['odoo_api_key']) : '';
-            $database = isset($_POST['odoo_database']) ? sanitize_text_field($_POST['odoo_database']) : '';
+            $odoo_url  = isset($_POST['odoo_instance_url']) ? sanitize_text_field(wp_unslash($_POST['odoo_instance_url'])) : '';
+            $username  = isset($_POST['odoo_username']) ? sanitize_text_field(wp_unslash($_POST['odoo_username'])) : '';
+            $api_key   = isset($_POST['odoo_api_key']) ? sanitize_text_field(wp_unslash($_POST['odoo_api_key'])) : '';
+            $database  = isset($_POST['odoo_database']) ? sanitize_text_field(wp_unslash($_POST['odoo_database'])) : '';
             $manual_db = isset($_POST['manual_db']) ? true : false;
 
             $has_errors = false;
@@ -582,7 +587,7 @@ class OdooFlow {
             error_log('OdooFlow: Detected Odoo SaaS instance');
             
             // Extract subdomain for SaaS instances
-            $parsed_url = parse_url($odoo_url);
+            $parsed_url = wp_parse_url($odoo_url);
             $host_parts = explode('.', $parsed_url['host']);
             $database = $host_parts[0];
             
@@ -695,7 +700,7 @@ class OdooFlow {
             error_log('OdooFlow: Detected Odoo SaaS instance');
             
             // For SaaS instances, the database name is part of the subdomain
-            $parsed_url = parse_url($odoo_url);
+            $parsed_url = wp_parse_url($odoo_url);
             $host = $parsed_url['host'];
             $subdomain_parts = explode('.', $host);
             
@@ -1008,7 +1013,8 @@ class OdooFlow {
         }
 
         // Get selected fields from request
-        $selected_fields = isset($_POST['fields']) ? array_map('sanitize_text_field', $_POST['fields']) : array('name', 'default_code', 'list_price');
+        //$selected_fields = isset($_POST['fields']) ? array_map('sanitize_text_field', $_POST['fields']) : array('name', 'default_code', 'list_price');
+        $selected_fields = isset($_POST['fields']) ? array_map('sanitize_text_field', wp_unslash((array) $_POST['fields'])) : array('name', 'default_code', 'list_price');
         error_log('OdooFlow: Selected fields - ' . print_r($selected_fields, true));
         
         // Ensure required fields are included
@@ -1187,10 +1193,16 @@ class OdooFlow {
             return;
         }
 
-        error_log('OdooFlow: Importing products - IDs: ' . print_r($_POST['product_ids'], true));
-        error_log('OdooFlow: Selected fields - ' . print_r($_POST['fields'] ?? [], true));
+        // Properly unslash and sanitize $_POST['product_ids']
+        $product_ids = array_map('intval', wp_unslash($_POST['product_ids']));
 
-        $product_ids = array_map('intval', $_POST['product_ids']);
+        // Ensure $_POST['fields'] is set and properly sanitized
+        $fields = isset($_POST['fields']) ? array_map('sanitize_text_field', wp_unslash((array) $_POST['fields'])) : [];
+
+        error_log('OdooFlow: Importing products - IDs: ' . print_r($product_ids, true));
+        error_log('OdooFlow: Selected fields - ' . print_r($fields, true));
+
+        //$product_ids = array_map('intval', $_POST['product_ids']);
         
         // Get the product details from Odoo
         $odoo_products = $this->get_odoo_products($product_ids);
@@ -1323,8 +1335,12 @@ class OdooFlow {
             return new WP_Error('missing_credentials', __('Please configure all Odoo connection settings first.', 'odooflow'));
         }
 
+        // phpcs:disable WordPress.Security.NonceVerification
+
         // Get selected fields from request
-        $selected_fields = isset($_POST['fields']) ? array_map('sanitize_text_field', $_POST['fields']) : array('name', 'default_code', 'list_price');
+        $selected_fields = isset($_POST['fields']) ? array_map('sanitize_text_field', wp_unslash((array) $_POST['fields'])) : array('name', 'default_code', 'list_price');
+        // phpcs:enable WordPress.Security.NonceVerification
+
         
         // Ensure required fields are always included
         if (!in_array('name', $selected_fields)) {
@@ -1512,11 +1528,13 @@ class OdooFlow {
         if (empty($odoo_product['name'])) {
             return new WP_Error('missing_name', __('Product name is required.', 'odooflow'));
         }
-
+        // phpcs:disable WordPress.Security.NonceVerification
         // Get selected fields from the request
-        $selected_fields = isset($_POST['fields']) ? array_map('sanitize_text_field', $_POST['fields']) : array('name', 'default_code');
-        error_log('Selected fields for import: ' . print_r($selected_fields, true));
+        //$selected_fields = isset($_POST['fields']) ? array_map('sanitize_text_field', wp_unslash((array) $_POST['fields'])) : array('name', 'default_code');
+        $selected_fields = isset($_POST['fields']) ? array_map('sanitize_text_field', wp_unslash((array) $_POST['fields'])) : array('name', 'default_code', 'list_price');
 
+        error_log('Selected fields for import: ' . print_r($selected_fields, true));
+        // phpcs:enable WordPress.Security.NonceVerification
         // Check if product already exists by SKU
         $existing_product_id = wc_get_product_id_by_sku($odoo_product['default_code']);
         
@@ -1704,7 +1722,8 @@ class OdooFlow {
         }
 
         $product_ids = array_map('intval', $_POST['product_ids']);
-        $selected_fields = isset($_POST['fields']) ? array_map('sanitize_text_field', $_POST['fields']) : array('name', 'default_code', 'list_price');
+        //$selected_fields = isset($_POST['fields']) ? array_map('sanitize_text_field', $_POST['fields']) : array('name', 'default_code', 'list_price');
+        $selected_fields = isset($_POST['fields']) ? array_map('sanitize_text_field', wp_unslash((array) $_POST['fields'])) : array('name', 'default_code', 'list_price');
         
         error_log('OdooFlow: Exporting products - IDs: ' . print_r($product_ids, true));
         error_log('OdooFlow: Selected fields - ' . print_r($selected_fields, true));
@@ -2444,7 +2463,8 @@ class OdooFlow {
             add_action('admin_notices', function() use ($order_id) {
                 echo '<div class="notice notice-success"><p>' . 
                     // translators: %s is the order ID.
-                     esc_html(sprintf(__('Order #%s successfully synced to Odoo', 'odooflow'), $order_id))
+                     esc_html(sprintf(__('Order #%s successfully synced to Odoo', 'odooflow'), $order_id)) 
+                     .
                      '</p></div>';
             });
         }
@@ -2586,7 +2606,9 @@ class OdooFlow {
         // Get or create customer in Odoo
         $partner_id = $this->get_or_create_odoo_customer($order);
         if (is_wp_error($partner_id)) {
+            // phpcs:ignore WordPress.Security.EscapeOutput.ExceptionNotEscaped -- Log message, not HTML output.
             error_log('OdooFlow: Error getting/creating customer - ' . $partner_id->get_error_message());
+            // phpcs:ignore WordPress.Security.EscapeOutput.ExceptionNotEscaped -- Log message, not HTML output.
             throw new Exception('Failed to get/create customer in Odoo: ' . $partner_id->get_error_message());
         }
         error_log('OdooFlow: Using Odoo partner ID: ' . $partner_id);
