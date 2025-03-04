@@ -1808,7 +1808,6 @@ class OdooFlow {
         $database = get_option('odooflow_database', '');
 
         if (empty($odoo_url) || empty($username) || empty($api_key) || empty($database)) {
-            // translators: %s is the Odoo server version (e.g., "16.0").
             return new WP_Error('missing_credentials', __('Please configure all Odoo connection settings first.', 'odooflow'));
         }
 
@@ -1828,26 +1827,22 @@ class OdooFlow {
         ]);
 
         if (is_wp_error($auth_response)) {
-            // translators: %s is the Odoo server version (e.g., "16.0").
             return new WP_Error('connection_error', __('Error connecting to Odoo server.', 'odooflow'));
         }
 
         $auth_body = wp_remote_retrieve_body($auth_response);
         $auth_xml = simplexml_load_string($auth_body);
         if ($auth_xml === false) {
-            // translators: %s is the Odoo server version (e.g., "16.0").
             return new WP_Error('parse_error', __('Error parsing authentication response.', 'odooflow'));
         }
 
         $auth_data = json_decode(json_encode($auth_xml), true);
         if (isset($auth_data['fault'])) {
-            // translators: %s is the Odoo server version (e.g., "16.0").
             return new WP_Error('auth_failed', __('Authentication failed. Please check your credentials.', 'odooflow'));
         }
 
         $uid = $auth_data['params']['param']['value']['int'] ?? null;
         if (!$uid) {
-            // translators: %s is the Odoo server version (e.g., "16.0").
             return new WP_Error('no_uid', __('Could not get user ID from authentication response.', 'odooflow'));
         }
 
@@ -1872,11 +1867,43 @@ class OdooFlow {
             $product_data['weight'] = $product->get_weight();
         }
 
-        // Check if product already exists in Odoo
-        $odoo_id = get_post_meta($product->get_id(), '_odoo_product_id', true);
+        // Get stored Odoo ID if exists
+        $stored_odoo_id = get_post_meta($product->get_id(), '_odoo_product_id', true);
         $created = false;
 
-        if ($odoo_id) {
+        // Check if product exists in Odoo by SKU
+        $search_request = xmlrpc_encode_request('execute_kw', array(
+            $database,
+            $uid,
+            $api_key,
+            'product.template',
+            'search_read',
+            array(
+                array(
+                    array('default_code', '=', $product->get_sku())
+                )
+            ),
+            array('fields' => array('id'))
+        ));
+
+        $search_response = wp_remote_post(rtrim($odoo_url, '/') . '/xmlrpc/2/object', [
+            'body' => $search_request,
+            'headers' => ['Content-Type' => 'text/xml'],
+            'timeout' => 30,
+            'sslverify' => false
+        ]);
+
+        if (is_wp_error($search_response)) {
+            return new WP_Error('search_error', __('Error searching for product in Odoo.', 'odooflow'));
+        }
+
+        $search_result = xmlrpc_decode(wp_remote_retrieve_body($search_response));
+        $odoo_id = null;
+
+        if (is_array($search_result) && !empty($search_result)) {
+            // Product exists in Odoo
+            $odoo_id = $search_result[0]['id'];
+            
             // Update existing product
             $update_request = xmlrpc_encode_request('execute_kw', array(
                 $database,
@@ -1895,8 +1922,12 @@ class OdooFlow {
             ]);
 
             if (is_wp_error($update_response)) {
-                // translators: %s is the Odoo server version (e.g., "16.0").
                 return new WP_Error('update_error', __('Error updating product in Odoo.', 'odooflow'));
+            }
+
+            $update_result = xmlrpc_decode(wp_remote_retrieve_body($update_response));
+            if (!$update_result) {
+                return new WP_Error('update_failed', __('Failed to update product in Odoo.', 'odooflow'));
             }
         } else {
             // Create new product
@@ -1917,24 +1948,21 @@ class OdooFlow {
             ]);
 
             if (is_wp_error($create_response)) {
-                // translators: %s is the Odoo server version (e.g., "16.0").
                 return new WP_Error('create_error', __('Error creating product in Odoo.', 'odooflow'));
             }
 
-            $create_body = wp_remote_retrieve_body($create_response);
-            $create_xml = simplexml_load_string($create_body);
-            if ($create_xml === false) {
-                // translators: %s is the Odoo server version (e.g., "16.0").
-                return new WP_Error('parse_error', __('Error parsing create response.', 'odooflow'));
-            }
-
-            $create_data = json_decode(json_encode($create_xml), true);
-            if (isset($create_data['fault'])) {
+            $create_result = xmlrpc_decode(wp_remote_retrieve_body($create_response));
+            if (!is_numeric($create_result)) {
                 return new WP_Error('create_failed', __('Failed to create product in Odoo.', 'odooflow'));
             }
 
-            $odoo_id = $create_data['params']['param']['value']['int'] ?? null;
+            $odoo_id = $create_result;
             $created = true;
+        }
+
+        // Update the stored Odoo ID in WooCommerce
+        if ($odoo_id) {
+            update_post_meta($product->get_id(), '_odoo_product_id', $odoo_id);
         }
 
         return array(
