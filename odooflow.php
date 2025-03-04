@@ -1660,6 +1660,7 @@ class OdooFlow {
                     'name' => $product->get_name(),
                     'sku' => $product->get_sku(),
                     'price' => $product->get_regular_price(),
+                    'type' => $product->get_type()
                 );
             }
             wp_reset_postdata();
@@ -1678,10 +1679,11 @@ class OdooFlow {
             $html .= '<tr><td colspan="4">' . __('No products found.', 'odooflow') . '</td></tr>';
         } else {
             foreach ($products as $product) {
+                $is_simple = $product['type'] === 'simple';
                 $html .= sprintf(
-                    '<tr>
+                    '<tr data-product-type="%5$s"%6$s>
                         <td class="check-column">
-                            <input type="checkbox" name="export_products[]" id="product-%1$s" value="%1$s">
+                            <input type="checkbox" name="export_products[]" id="product-%1$s" value="%1$s"%7$s>
                             <label for="product-%1$s"></label>
                         </td>
                         <td>%2$s</td>
@@ -1691,7 +1693,10 @@ class OdooFlow {
                     esc_attr($product['id']),
                     esc_html($product['name']),
                     esc_html($product['sku']),
-                    esc_html(number_format((float)$product['price'], 2))
+                    esc_html(number_format((float)$product['price'], 2)),
+                    esc_attr($product['type']),
+                    $is_simple ? '' : ' class="non-simple-product"',
+                    $is_simple ? '' : ' disabled'
                 );
             }
         }
