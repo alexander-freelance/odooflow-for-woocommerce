@@ -67,6 +67,9 @@ class OdooFlow {
         add_action('admin_init', array($this, 'check_woocommerce_dependency'));
         add_action('admin_menu', array($this, 'add_admin_menu'));
         add_filter('plugin_action_links_' . plugin_basename(__FILE__), array($this, 'add_settings_link'));
+        add_filter('plugin_row_meta', array($this, 'plugin_row_meta'), 10, 2);
+        add_filter('plugin_author', array($this, 'plugin_author_link'), 10, 2);
+        add_filter('plugin_author_uri', array($this, 'plugin_author_uri'), 10, 2);
         add_action('plugins_loaded', array($this, 'init_plugin'));
         add_action('admin_enqueue_scripts', array($this, 'enqueue_admin_scripts'));
         add_action('wp_ajax_refresh_odoo_databases', array($this, 'ajax_refresh_odoo_databases'));
@@ -98,18 +101,35 @@ class OdooFlow {
      * Check WooCommerce Dependency
      */
     public function check_woocommerce_dependency() {
-        if (!class_exists('WooCommerce')) {
+        if (!in_array('woocommerce/woocommerce.php', apply_filters('active_plugins', get_option('active_plugins')))) {
             add_action('admin_notices', array($this, 'woocommerce_missing_notice'));
+            
+            // Only attempt to deactivate if we're in admin
+            if (is_admin() && current_user_can('activate_plugins')) {
+                require_once ABSPATH . 'wp-admin/includes/plugin.php';
+                deactivate_plugins(plugin_basename(__FILE__));
+                
+                if (isset($_GET['activate'])) {
+                    unset($_GET['activate']);
+                }
+            }
+            return false;
         }
+        return true;
     }
 
     /**
      * WooCommerce missing notice
      */
     public function woocommerce_missing_notice() {
+        if (!current_user_can('activate_plugins')) {
+            return;
+        }
         ?>
         <div class="error">
-            <p><?php esc_html_e('WooCommerce is required for OdooFlow to work. Please install and activate WooCommerce.', 'odooflow'); ?></p>
+            <p>
+                <?php esc_html_e('OdooFlow requires WooCommerce to be installed and activated. Please install and activate WooCommerce before activating OdooFlow.', 'odooflow'); ?>
+            </p>
         </div>
         <?php
     }
@@ -121,6 +141,22 @@ class OdooFlow {
         $settings_link = '<a href="admin.php?page=odooflow-settings">' . __('Settings', 'odooflow') . '</a>';
         array_unshift($links, $settings_link);
         return $links;
+    }
+
+    /**
+     * Add plugin row meta
+     */
+    public function plugin_row_meta($links, $file) {
+        if (plugin_basename(__FILE__) !== $file) {
+            return $links;
+        }
+
+        $row_meta = array(
+            'docs' => '<a href="https://boringplugins.co/odooflow-for-woocommerce-docs" target="_blank">' . __('Documentation', 'odooflow') . '</a>',
+            'support' => '<a href="mailto:hello@boringplugins.com">' . __('Get Support', 'odooflow') . '</a>'
+        );
+
+        return array_merge($links, $row_meta);
     }
 
     /**
@@ -142,6 +178,11 @@ class OdooFlow {
      * Initialize plugin
      */
     public function init_plugin() {
+        // Check WooCommerce dependency first
+        if (!$this->check_woocommerce_dependency()) {
+            return;
+        }
+        // Rest of initialization code
         load_plugin_textdomain('odooflow', false, dirname(plugin_basename(__FILE__)) . '/languages');
     }
 
@@ -2971,6 +3012,26 @@ class OdooFlow {
 
         error_log('OdooFlow: Successfully updated order');
         return true;
+    }
+
+    /**
+     * Add plugin author link
+     */
+    public function plugin_author_link($author_name, $plugin_file) {
+        if (plugin_basename(__FILE__) === $plugin_file) {
+            return 'boringplugins';
+        }
+        return $author_name;
+    }
+
+    /**
+     * Add plugin author URI
+     */
+    public function plugin_author_uri($uri, $plugin_file) {
+        if (plugin_basename(__FILE__) === $plugin_file) {
+            return 'https://boringplugins.com';
+        }
+        return $uri;
     }
 }
 
