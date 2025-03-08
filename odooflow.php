@@ -82,6 +82,7 @@ class OdooFlow {
         add_action('wp_ajax_import_odoo_customers', array($this, 'ajax_import_odoo_customers'));
         add_action('wp_ajax_export_woo_customers', array($this, 'ajax_export_woo_customers'));
         add_action('wp_ajax_sync_order_to_odoo', array($this, 'ajax_sync_order_to_odoo'));
+        add_action('wp_ajax_get_odoo_customers', array($this, 'ajax_get_odoo_customers'));
         
         // Add order sync hooks
         add_filter('woocommerce_order_actions', array($this, 'add_order_sync_action'));
@@ -228,7 +229,10 @@ class OdooFlow {
                     'confirmSync' => __('Are you sure you want to sync this order to Odoo?', 'odooflow'),
                     'syncing' => __('Syncing...', 'odooflow'),
                     'syncToOdoo' => __('Sync to Odoo', 'odooflow'),
-                    'errorSyncing' => __('Error syncing order to Odoo', 'odooflow')
+                    'errorSyncing' => __('Error syncing order to Odoo', 'odooflow'),
+                    'errorLoadingCustomers' => __('Error loading customers from Odoo', 'odooflow'),
+                    'loadingCustomers' => __('Loading customers...', 'odooflow'),
+                    'selectCustomer' => __('Please select a customer', 'odooflow')
                 )
             ));
         }
@@ -3105,9 +3109,37 @@ class OdooFlow {
                  '</a></p>';
         } else {
             echo '<p>' . __('This order has not been synced to Odoo yet.', 'odooflow') . '</p>';
-            echo '<button type="button" class="button sync-to-odoo" data-order-id="' . esc_attr($order->get_id()) . '">' . 
-                 __('Sync to Odoo', 'odooflow') . 
+            echo '<button type="button" class="button create-odoo-order" data-order-id="' . esc_attr($order->get_id()) . '">' . 
+                 __('Create Order in Odoo', 'odooflow') . 
                  '</button>';
+            
+            // Add modal HTML
+            echo '<div id="odooflow-create-order-modal" class="odooflow-modal" style="display:none;">
+                <div class="odooflow-modal-content">
+                    <span class="odooflow-modal-close">&times;</span>
+                    <h2>' . __('Create Order in Odoo', 'odooflow') . '</h2>
+                    <div class="odooflow-modal-body">
+                        <form id="odooflow-create-order-form">
+                            <div class="form-field">
+                                <label for="odoo-customer">' . __('Customer', 'odooflow') . '</label>
+                                <div class="customer-select-wrapper">
+                                    <select id="odoo-customer" name="odoo_customer" class="widefat">
+                                        <option value="">' . __('Select a customer...', 'odooflow') . '</option>
+                                    </select>
+                                    <div class="spinner" style="display:none;"></div>
+                                </div>
+                                <p class="description">' . __('Select the customer in Odoo to associate with this order.', 'odooflow') . '</p>
+                            </div>
+                        </form>
+                    </div>
+                    <div class="odooflow-modal-footer">
+                        <button type="button" class="button cancel-create-order">' . __('Cancel', 'odooflow') . '</button>
+                        <button type="button" class="button button-primary create-order-submit" disabled>' . 
+                            __('Create Order', 'odooflow') . 
+                        '</button>
+                    </div>
+                </div>
+            </div>';
         }
         
         echo '</div>';
@@ -3145,6 +3177,75 @@ class OdooFlow {
                 $result
             )
         ));
+    }
+
+    /**
+     * AJAX handler for fetching Odoo customers
+     */
+    public function ajax_get_odoo_customers() {
+        check_ajax_referer('odooflow_metabox_nonce', 'nonce');
+
+        if (!current_user_can('edit_shop_orders')) {
+            wp_send_json_error(array('message' => __('You do not have permission to perform this action.', 'odooflow')));
+        }
+
+        $odoo_url = get_option('odooflow_odoo_url', '');
+        $username = get_option('odooflow_username', '');
+        $api_key = get_option('odooflow_api_key', '');
+        $database = get_option('odooflow_database', '');
+
+        if (empty($odoo_url) || empty($username) || empty($api_key) || empty($database)) {
+            wp_send_json_error(array('message' => __('Odoo connection settings are incomplete.', 'odooflow')));
+        }
+
+        try {
+            // Authenticate with Odoo
+            $auth_result = $this->authenticate_odoo($odoo_url, $database, $username, $api_key);
+            if (is_wp_error($auth_result)) {
+                throw new Exception($auth_result->get_error_message());
+            }
+            $uid = $auth_result;
+
+            // Search for customers
+            $request = xmlrpc_encode_request('execute_kw', array(
+                $database,
+                $uid,
+                $api_key,
+                'res.partner',
+                'search_read',
+                array(
+                    array(
+                        array('customer_rank', '>', 0),
+                        array('active', '=', true)
+                    )
+                ),
+                array(
+                    'fields' => array('id', 'name', 'email', 'phone'),
+                    'order' => 'name ASC'
+                )
+            ));
+
+            $response = wp_remote_post(rtrim($odoo_url, '/') . '/xmlrpc/2/object', array(
+                'body' => $request,
+                'headers' => array('Content-Type' => 'text/xml'),
+                'timeout' => 30,
+                'sslverify' => false
+            ));
+
+            if (is_wp_error($response)) {
+                throw new Exception($response->get_error_message());
+            }
+
+            $customers = xmlrpc_decode(wp_remote_retrieve_body($response));
+            if (!is_array($customers)) {
+                throw new Exception(__('Invalid response from Odoo', 'odooflow'));
+            }
+
+            wp_send_json_success(array('customers' => $customers));
+
+        } catch (Exception $e) {
+            wp_send_json_error(array('message' => $e->getMessage()));
+        }
     }
 }
 

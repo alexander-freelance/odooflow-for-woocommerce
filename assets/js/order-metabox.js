@@ -1,40 +1,85 @@
 jQuery(document).ready(function($) {
-    // Handle sync to Odoo button click
-    $(document).on('click', '.sync-to-odoo', function() {
-        const $button = $(this);
-        const orderId = $button.data('order-id');
-        
+    const modal = $('#odooflow-create-order-modal');
+    const form = $('#odooflow-create-order-form');
+    const customerSelect = $('#odoo-customer');
+    const submitButton = $('.create-order-submit');
+    let currentOrderId = null;
+    
+    // Handle create order button click
+    $(document).on('click', '.create-odoo-order', function() {
+        const orderId = $(this).data('order-id');
         if (!orderId) {
             return;
         }
+        
+        currentOrderId = orderId;
+        loadCustomers();
+        modal.show();
+    });
 
-        if (!confirm(odooflowMetabox.i18n.confirmSync)) {
-            return;
+    // Close modal when clicking the close button or cancel button
+    $('.odooflow-modal-close, .cancel-create-order').on('click', function() {
+        modal.hide();
+        resetForm();
+    });
+
+    // Close modal when clicking outside
+    $(window).on('click', function(event) {
+        if ($(event.target).is(modal)) {
+            modal.hide();
+            resetForm();
         }
+    });
 
-        $button.prop('disabled', true)
-               .text(odooflowMetabox.i18n.syncing);
+    // Load customers from Odoo
+    function loadCustomers() {
+        const spinner = customerSelect.siblings('.spinner');
+        customerSelect.prop('disabled', true);
+        spinner.show();
 
         $.post(odooflowMetabox.ajaxurl, {
-            action: 'sync_order_to_odoo',
-            nonce: odooflowMetabox.nonce,
-            order_id: orderId
+            action: 'get_odoo_customers',
+            nonce: odooflowMetabox.nonce
         })
         .done(function(response) {
-            if (response.success) {
-                alert(response.data.message);
-                // Reload the page to show updated metabox
-                window.location.reload();
+            if (response.success && response.data.customers) {
+                populateCustomerSelect(response.data.customers);
             } else {
-                alert(response.data.message || odooflowMetabox.i18n.errorSyncing);
-                $button.prop('disabled', false)
-                       .text(odooflowMetabox.i18n.syncToOdoo);
+                alert(response.data.message || odooflowMetabox.i18n.errorLoadingCustomers);
             }
         })
         .fail(function() {
-            alert(odooflowMetabox.i18n.errorSyncing);
-            $button.prop('disabled', false)
-                   .text(odooflowMetabox.i18n.syncToOdoo);
+            alert(odooflowMetabox.i18n.errorLoadingCustomers);
+        })
+        .always(function() {
+            customerSelect.prop('disabled', false);
+            spinner.hide();
         });
+    }
+
+    // Populate customer select dropdown
+    function populateCustomerSelect(customers) {
+        customerSelect.find('option:not(:first)').remove();
+        
+        customers.forEach(function(customer) {
+            const optionText = customer.name + (customer.email ? ` (${customer.email})` : '');
+            customerSelect.append(
+                $('<option></option>')
+                    .val(customer.id)
+                    .text(optionText)
+            );
+        });
+    }
+
+    // Enable/disable submit button based on form validation
+    customerSelect.on('change', function() {
+        submitButton.prop('disabled', !$(this).val());
     });
+
+    // Reset form
+    function resetForm() {
+        form[0].reset();
+        submitButton.prop('disabled', true);
+        currentOrderId = null;
+    }
 }); 
