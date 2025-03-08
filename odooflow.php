@@ -3141,6 +3141,20 @@ class OdooFlow {
                                 <p class="description">' . __('Select the customer in Odoo to associate with this order.', 'odooflow') . '</p>
                             </div>
 
+                            <div class="form-field">
+                                <label>' . __('Type', 'odooflow') . '</label>
+                                <div class="order-type-wrapper">
+                                    <label class="radio-label">
+                                        <input type="radio" name="order_type" value="quote" checked>
+                                        ' . __('Quote', 'odooflow') . '
+                                    </label>
+                                    <label class="radio-label">
+                                        <input type="radio" name="order_type" value="sale">
+                                        ' . __('Sales Order', 'odooflow') . '
+                                    </label>
+                                </div>
+                            </div>
+
                             <div class="form-field product-lines">
                                 <label>' . __('Products', 'odooflow') . '</label>
                                 <div class="product-lines-container">
@@ -3359,6 +3373,7 @@ class OdooFlow {
 
         $order_id = isset($_POST['order_id']) ? absint($_POST['order_id']) : 0;
         $customer_id = isset($_POST['customer_id']) ? absint($_POST['customer_id']) : 0;
+        $order_type = isset($_POST['order_type']) ? sanitize_text_field($_POST['order_type']) : 'quote';
         $products = isset($_POST['products']) ? json_decode(stripslashes($_POST['products']), true) : array();
 
         if (!$order_id || !$customer_id || empty($products)) {
@@ -3405,6 +3420,11 @@ class OdooFlow {
                 'origin' => 'WooCommerce Order #' . $order->get_order_number()
             );
 
+            // If this is a sales order, set the state
+            if ($order_type === 'sale') {
+                $order_data['state'] = 'sale';
+            }
+
             // Create order in Odoo
             $request = xmlrpc_encode_request('execute_kw', array(
                 $database,
@@ -3429,6 +3449,29 @@ class OdooFlow {
             $odoo_order_id = xmlrpc_decode(wp_remote_retrieve_body($response));
             if (!is_numeric($odoo_order_id)) {
                 throw new Exception(__('Invalid response from Odoo', 'odooflow'));
+            }
+
+            // If this is a sales order, confirm it
+            if ($order_type === 'sale') {
+                $confirm_request = xmlrpc_encode_request('execute_kw', array(
+                    $database,
+                    $uid,
+                    $api_key,
+                    'sale.order',
+                    'action_confirm',
+                    array(array($odoo_order_id))
+                ));
+
+                $confirm_response = wp_remote_post(rtrim($odoo_url, '/') . '/xmlrpc/2/object', array(
+                    'body' => $confirm_request,
+                    'headers' => array('Content-Type' => 'text/xml'),
+                    'timeout' => 30,
+                    'sslverify' => false
+                ));
+
+                if (is_wp_error($confirm_response)) {
+                    throw new Exception($confirm_response->get_error_message());
+                }
             }
 
             // Save Odoo order ID to WooCommerce order

@@ -189,6 +189,7 @@ jQuery(document).ready(function($) {
             nonce: odooflowMetabox.nonce,
             order_id: currentOrderId,
             customer_id: parseInt(customerSelect.val()),
+            order_type: $('input[name="order_type"]:checked').val(),
             products: JSON.stringify(products)
         })
         .done(function(response) {
