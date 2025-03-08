@@ -81,11 +81,14 @@ class OdooFlow {
         add_action('manage_posts_extra_tablenav', array($this, 'add_odoo_count_button'), 20);
         add_action('wp_ajax_import_odoo_customers', array($this, 'ajax_import_odoo_customers'));
         add_action('wp_ajax_export_woo_customers', array($this, 'ajax_export_woo_customers'));
+        add_action('wp_ajax_sync_order_to_odoo', array($this, 'ajax_sync_order_to_odoo'));
         
         // Add order sync hooks
         add_filter('woocommerce_order_actions', array($this, 'add_order_sync_action'));
         add_action('woocommerce_order_action_odoo_sync_order', array($this, 'process_order_sync_action'));
-        add_action('wp_ajax_sync_order_to_odoo', array($this, 'ajax_sync_order_to_odoo'));
+        
+        // Add Odoo metabox to order page
+        add_action('add_meta_boxes', array($this, 'add_odoo_order_metabox'));
 
         // Declare HPOS compatibility
         add_action('before_woocommerce_init', function() {
@@ -94,8 +97,6 @@ class OdooFlow {
             }
         });
     }
-// phpcs:disable WordPress.PHP.DevelopmentFunctions.error_log_error_log
-// phpcs:disable WordPress.PHP.DevelopmentFunctions.error_log_print_r
 
     /**
      * Check WooCommerce Dependency
@@ -191,16 +192,22 @@ class OdooFlow {
      */
     public function enqueue_admin_scripts($hook) {
         // Load on OdooFlow settings page, products page, and users page
-        if ('toplevel_page_odooflow-settings' !== $hook && 'edit.php' !== $hook && 'users.php' !== $hook) {
+        $allowed_hooks = array(
+            'toplevel_page_odooflow-settings',
+            'edit.php',
+            'users.php',
+            'post.php', // For order edit page (legacy)
+            wc_get_page_screen_id('shop-order') // For order edit page (HPOS)
+        );
+
+        if (!in_array($hook, $allowed_hooks)) {
             return;
         }
 
-        // phpcs:disable WordPress.Security.NonceVerification.Recommended
         // Only load on products page if we're viewing products
         if ('edit.php' === $hook && (!isset($_GET['post_type']) || $_GET['post_type'] !== 'product')) {
             return;
         }
-        // phpcs:enable WordPress.Security.NonceVerification.Recommended
 
         wp_enqueue_style('odooflow-admin', ODOOFLOW_PLUGIN_URL . 'assets/css/admin.css', array(), ODOOFLOW_VERSION);
         wp_enqueue_script('odooflow-admin', ODOOFLOW_PLUGIN_URL . 'assets/js/admin.js', array('jquery'), ODOOFLOW_VERSION, true);
@@ -210,6 +217,21 @@ class OdooFlow {
             'ajax_url' => admin_url('admin-ajax.php'),
             'nonce' => wp_create_nonce('odooflow_ajax_nonce'),
         ));
+
+        // Load order metabox script on order pages
+        if ('post.php' === $hook || $hook === wc_get_page_screen_id('shop-order')) {
+            wp_enqueue_script('odooflow-order-metabox', ODOOFLOW_PLUGIN_URL . 'assets/js/order-metabox.js', array('jquery'), ODOOFLOW_VERSION, true);
+            wp_localize_script('odooflow-order-metabox', 'odooflowMetabox', array(
+                'ajaxurl' => admin_url('admin-ajax.php'),
+                'nonce' => wp_create_nonce('odooflow_metabox_nonce'),
+                'i18n' => array(
+                    'confirmSync' => __('Are you sure you want to sync this order to Odoo?', 'odooflow'),
+                    'syncing' => __('Syncing...', 'odooflow'),
+                    'syncToOdoo' => __('Sync to Odoo', 'odooflow'),
+                    'errorSyncing' => __('Error syncing order to Odoo', 'odooflow')
+                )
+            ));
+        }
     }
 
     /**
@@ -3032,6 +3054,97 @@ class OdooFlow {
             return 'https://boringplugins.com';
         }
         return $uri;
+    }
+
+    /**
+     * Add Odoo metabox to order page
+     */
+    public function add_odoo_order_metabox() {
+        $screen = class_exists('\Automattic\WooCommerce\Internal\DataStores\Orders\CustomOrdersTableController') && 
+                 wc_get_container()->get(\Automattic\WooCommerce\Internal\DataStores\Orders\CustomOrdersTableController::class)->custom_orders_table_usage_is_enabled()
+            ? wc_get_page_screen_id('shop-order')
+            : 'shop_order';
+
+        add_meta_box(
+            'odooflow_order_metabox',
+            __('Odoo Order Information', 'odooflow'),
+            array($this, 'render_odoo_order_metabox'),
+            $screen,
+            'side',
+            'high'
+        );
+    }
+
+    /**
+     * Render Odoo order metabox content
+     *
+     * @param mixed $object Post object or order object depending on HPOS status
+     */
+    public function render_odoo_order_metabox($object) {
+        // Get the WC_Order object
+        $order = is_a($object, 'WP_Post') ? wc_get_order($object->ID) : $object;
+        
+        if (!$order) {
+            return;
+        }
+
+        $odoo_order_id = $order->get_meta('_odoo_order_id');
+        $odoo_url = get_option('odooflow_odoo_url', '');
+        
+        echo '<div class="odooflow-metabox-content">';
+        
+        if ($odoo_order_id) {
+            $odoo_order_url = rtrim($odoo_url, '/') . '/web#id=' . $odoo_order_id . '&model=sale.order&view_type=form';
+            echo '<p>' . sprintf(
+                /* translators: %s: Odoo order ID */
+                __('Odoo Order ID: %s', 'odooflow'),
+                '<strong>' . esc_html($odoo_order_id) . '</strong>'
+            ) . '</p>';
+            echo '<p><a href="' . esc_url($odoo_order_url) . '" target="_blank" class="button">' . 
+                 __('View in Odoo', 'odooflow') . 
+                 '</a></p>';
+        } else {
+            echo '<p>' . __('This order has not been synced to Odoo yet.', 'odooflow') . '</p>';
+            echo '<button type="button" class="button sync-to-odoo" data-order-id="' . esc_attr($order->get_id()) . '">' . 
+                 __('Sync to Odoo', 'odooflow') . 
+                 '</button>';
+        }
+        
+        echo '</div>';
+    }
+
+    /**
+     * AJAX handler for syncing order to Odoo
+     */
+    public function ajax_sync_order_to_odoo() {
+        check_ajax_referer('odooflow_metabox_nonce', 'nonce');
+
+        if (!current_user_can('edit_shop_orders')) {
+            wp_send_json_error(array('message' => __('You do not have permission to perform this action.', 'odooflow')));
+        }
+
+        $order_id = isset($_POST['order_id']) ? absint($_POST['order_id']) : 0;
+        if (!$order_id) {
+            wp_send_json_error(array('message' => __('Invalid order ID.', 'odooflow')));
+        }
+
+        $order = wc_get_order($order_id);
+        if (!$order) {
+            wp_send_json_error(array('message' => __('Order not found.', 'odooflow')));
+        }
+
+        $result = $this->sync_order_to_odoo($order);
+        if (is_wp_error($result)) {
+            wp_send_json_error(array('message' => $result->get_error_message()));
+        }
+
+        wp_send_json_success(array(
+            'message' => sprintf(
+                /* translators: %s: Odoo order ID */
+                __('Order successfully synced to Odoo (ID: %s)', 'odooflow'),
+                $result
+            )
+        ));
     }
 }
 
