@@ -84,6 +84,7 @@ class OdooFlow {
         add_action('wp_ajax_sync_order_to_odoo', array($this, 'ajax_sync_order_to_odoo'));
         add_action('wp_ajax_get_odoo_customers', array($this, 'ajax_get_odoo_customers'));
         add_action('wp_ajax_get_odoo_products_for_order', array($this, 'ajax_get_odoo_products_for_order'));
+        add_action('wp_ajax_create_odoo_order', array($this, 'ajax_create_odoo_order'));
         
         // Add order sync hooks
         add_filter('woocommerce_order_actions', array($this, 'add_order_sync_action'));
@@ -238,7 +239,10 @@ class OdooFlow {
                     'loadingProducts' => __('Loading products...', 'odooflow'),
                     'selectProduct' => __('Please select a product', 'odooflow'),
                     'enterQuantity' => __('Please enter a quantity', 'odooflow'),
-                    'enterPrice' => __('Please enter a price', 'odooflow')
+                    'enterPrice' => __('Please enter a price', 'odooflow'),
+                    'createOrder' => __('Create Order', 'odooflow'),
+                    'creating' => __('Creating...', 'odooflow'),
+                    'errorCreating' => __('Error creating order in Odoo', 'odooflow')
                 )
             ));
         }
@@ -3337,6 +3341,107 @@ class OdooFlow {
             }
 
             wp_send_json_success(array('products' => $products));
+
+        } catch (Exception $e) {
+            wp_send_json_error(array('message' => $e->getMessage()));
+        }
+    }
+
+    /**
+     * AJAX handler for creating order in Odoo
+     */
+    public function ajax_create_odoo_order() {
+        check_ajax_referer('odooflow_metabox_nonce', 'nonce');
+
+        if (!current_user_can('edit_shop_orders')) {
+            wp_send_json_error(array('message' => __('You do not have permission to perform this action.', 'odooflow')));
+        }
+
+        $order_id = isset($_POST['order_id']) ? absint($_POST['order_id']) : 0;
+        $customer_id = isset($_POST['customer_id']) ? absint($_POST['customer_id']) : 0;
+        $products = isset($_POST['products']) ? json_decode(stripslashes($_POST['products']), true) : array();
+
+        if (!$order_id || !$customer_id || empty($products)) {
+            wp_send_json_error(array('message' => __('Missing required data.', 'odooflow')));
+        }
+
+        $order = wc_get_order($order_id);
+        if (!$order) {
+            wp_send_json_error(array('message' => __('WooCommerce order not found.', 'odooflow')));
+        }
+
+        $odoo_url = get_option('odooflow_odoo_url', '');
+        $username = get_option('odooflow_username', '');
+        $api_key = get_option('odooflow_api_key', '');
+        $database = get_option('odooflow_database', '');
+
+        if (empty($odoo_url) || empty($username) || empty($api_key) || empty($database)) {
+            wp_send_json_error(array('message' => __('Odoo connection settings are incomplete.', 'odooflow')));
+        }
+
+        try {
+            // Authenticate with Odoo
+            $auth_result = $this->authenticate_odoo($odoo_url, $database, $username, $api_key);
+            if (is_wp_error($auth_result)) {
+                throw new Exception($auth_result->get_error_message());
+            }
+            $uid = $auth_result;
+
+            // Prepare order lines
+            $order_lines = array();
+            foreach ($products as $product) {
+                $order_lines[] = array(0, 0, array(
+                    'product_id' => $product['id'],
+                    'product_uom_qty' => $product['quantity'],
+                    'price_unit' => $product['price']
+                ));
+            }
+
+            // Create order data
+            $order_data = array(
+                'partner_id' => $customer_id,
+                'order_line' => $order_lines,
+                'client_order_ref' => $order->get_order_number(),
+                'origin' => 'WooCommerce Order #' . $order->get_order_number()
+            );
+
+            // Create order in Odoo
+            $request = xmlrpc_encode_request('execute_kw', array(
+                $database,
+                $uid,
+                $api_key,
+                'sale.order',
+                'create',
+                array($order_data)
+            ));
+
+            $response = wp_remote_post(rtrim($odoo_url, '/') . '/xmlrpc/2/object', array(
+                'body' => $request,
+                'headers' => array('Content-Type' => 'text/xml'),
+                'timeout' => 30,
+                'sslverify' => false
+            ));
+
+            if (is_wp_error($response)) {
+                throw new Exception($response->get_error_message());
+            }
+
+            $odoo_order_id = xmlrpc_decode(wp_remote_retrieve_body($response));
+            if (!is_numeric($odoo_order_id)) {
+                throw new Exception(__('Invalid response from Odoo', 'odooflow'));
+            }
+
+            // Save Odoo order ID to WooCommerce order
+            $order->update_meta_data('_odoo_order_id', $odoo_order_id);
+            $order->save();
+
+            wp_send_json_success(array(
+                'message' => sprintf(
+                    /* translators: %s: Odoo order ID */
+                    __('Order successfully created in Odoo (ID: %s)', 'odooflow'),
+                    $odoo_order_id
+                )
+            ));
 
         } catch (Exception $e) {
             wp_send_json_error(array('message' => $e->getMessage()));

@@ -160,9 +160,56 @@ jQuery(document).ready(function($) {
         validateForm();
     });
 
+    // Handle form submission
+    submitButton.on('click', function() {
+        if (!validateForm()) {
+            return;
+        }
+
+        const products = [];
+        $('.product-line').each(function() {
+            const line = $(this);
+            const productId = line.find('.odoo-product').val();
+            const quantity = line.find('.quantity').val();
+            const price = line.find('.price').val();
+            
+            if (productId && quantity && price) {
+                products.push({
+                    id: parseInt(productId),
+                    quantity: parseFloat(quantity),
+                    price: parseFloat(price)
+                });
+            }
+        });
+
+        submitButton.prop('disabled', true).text(odooflowMetabox.i18n.creating);
+
+        $.post(odooflowMetabox.ajaxurl, {
+            action: 'create_odoo_order',
+            nonce: odooflowMetabox.nonce,
+            order_id: currentOrderId,
+            customer_id: parseInt(customerSelect.val()),
+            products: JSON.stringify(products)
+        })
+        .done(function(response) {
+            if (response.success) {
+                alert(response.data.message);
+                window.location.reload();
+            } else {
+                alert(response.data.message || odooflowMetabox.i18n.errorCreating);
+                submitButton.prop('disabled', false).text(odooflowMetabox.i18n.createOrder);
+            }
+        })
+        .fail(function() {
+            alert(odooflowMetabox.i18n.errorCreating);
+            submitButton.prop('disabled', false).text(odooflowMetabox.i18n.createOrder);
+        });
+    });
+
     // Enable/disable submit button based on form validation
     function validateForm() {
         let isValid = customerSelect.val() ? true : false;
+        let hasValidProduct = false;
         
         $('.product-line').each(function() {
             const line = $(this);
@@ -170,20 +217,24 @@ jQuery(document).ready(function($) {
             const quantity = line.find('.quantity').val();
             const price = line.find('.price').val();
             
-            if (productId && (!quantity || !price)) {
+            if (productId && quantity && price) {
+                hasValidProduct = true;
+            } else if (productId || quantity || price) {
                 isValid = false;
                 return false;
             }
         });
 
+        isValid = isValid && hasValidProduct;
         submitButton.prop('disabled', !isValid);
+        return isValid;
     }
 
     // Reset form
     function resetForm() {
         form[0].reset();
         $('.product-line:not(:first)').remove();
-        submitButton.prop('disabled', true);
+        submitButton.prop('disabled', true).text(odooflowMetabox.i18n.createOrder);
         currentOrderId = null;
     }
 }); 
