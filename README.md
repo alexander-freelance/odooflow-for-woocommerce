@@ -2,13 +2,21 @@
 
 
 Contributors: boringplugins
+
 Donate link: https://odooflow.co/donate
+
 Tags: odoo, erp, integration, e-commerce, sync
+
 Requires at least: 5.0
+
 Tested up to: 6.7
+
 Requires PHP: 7.2
+
 Stable tag: 1.0.0
+
 License: GPLv2 or later
+
 License URI: http://www.gnu.org/licenses/gpl-2.0.html
 
 Seamlessly integrate your WooCommerce store with Odoo ERP system for synchronized product, customer, and order management.
@@ -40,7 +48,7 @@ OdooFlow provides a robust bridge between WooCommerce and Odoo, enabling automat
 * Bulk import/export capabilities
 * Detailed logging and error handling
 * Customizable field mapping
-* Support for Odoo versions 12.0 and above
+* Support for Odoo versions 17, 18 and above
 
 == Installation ==
 
@@ -56,7 +64,7 @@ OdooFlow provides a robust bridge between WooCommerce and Odoo, enabling automat
 == Frequently Asked Questions ==
 
 = Which Odoo versions are supported? =
-OdooFlow supports Odoo versions 12.0 and above.
+OdooFlow supports Odoo versions 17 & 18 and above.
 
 = Is it compatible with WooCommerce? =
 Yes, OdooFlow is fully compatible with WooCommerce 3.0 and above.
