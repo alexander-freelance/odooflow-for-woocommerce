@@ -1,4 +1,6 @@
 === OdooFlow - Odoo Integration for WooCommerce ===
+
+
 Contributors: boringplugins
 Donate link: https://odooflow.co/donate
 Tags: odoo, erp, integration, e-commerce, sync
