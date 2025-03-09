@@ -90,9 +90,9 @@ Initial release of OdooFlow - WooCommerce Odoo Integration plugin.
 
 For more information, documentation, and support:
 
-* [Plugin Website](https://odooflow.co)
-* [Documentation](https://odooflow.co/docs)
-* [Support](https://odooflow.co/support)
+* [Plugin Website](https://boringplugins.co/)
+* [Documentation](https://boringplugins.co/documentation/odooflow-for-woocommerce)
+* [Support](https://boringplugins.co/support)
 
 == Credits ==
 
