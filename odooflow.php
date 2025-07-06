@@ -2409,6 +2409,9 @@ class OdooFlow {
 
         $raw_vat  = $get_meta( 'billing_id' );           // número CC/NIT
         $id_code  = strtoupper( $get_meta( 'tipo_identificacion' ) ); // 13,22,31...
+        $state    = $get_meta( 'billing_departamento' );
+        $city     = $get_meta( 'billing_ciudad' );
+        $country  = strtoupper( $get_meta( 'billing_country' ) );
 
         // --- 2. Normaliza y asigna VAT ------------------------------------
         if ( $raw_vat ) {
@@ -2442,6 +2445,25 @@ class OdooFlow {
             if ( $cache[ $id_code ] ) {
                 $payload['l10n_latam_identification_type_id'] = $cache[ $id_code ];
             }
+        }
+
+        // --- 4. País, departamento y ciudad ------------------------------
+        if ( $country ) {
+            $cid = $this->lookup_country_id( $country, $database, $uid, $api_key, $object_ep );
+            if ( $cid ) {
+                $payload['country_id'] = $cid;
+            }
+        }
+
+        if ( $state ) {
+            $sid = $this->lookup_state_id( $state, $country ?: 'CO', $database, $uid, $api_key, $object_ep );
+            if ( $sid ) {
+                $payload['state_id'] = $sid;
+            }
+        }
+
+        if ( $city ) {
+            $payload['city'] = $city;
         }
 
         return $payload;
@@ -3083,9 +3105,105 @@ class OdooFlow {
      * Get country ID from Odoo
      */
     private function get_country_id($country_code) {
-        // Implementation to get country ID from Odoo
-        // This would need to be cached for performance
-        return 0; // Placeholder
+        $odoo_url = get_option('odooflow_odoo_url', '');
+        $username = get_option('odooflow_username', '');
+        $api_key  = get_option('odooflow_api_key', '');
+        $database = get_option('odooflow_database', '');
+
+        if (empty($odoo_url) || empty($username) || empty($api_key) || empty($database) || !$country_code) {
+            return 0;
+        }
+
+        $common_ep = rtrim($odoo_url, '/') . '/xmlrpc/2/common';
+        $object_ep = rtrim($odoo_url, '/') . '/xmlrpc/2/object';
+
+        $auth_request = xmlrpc_encode_request('authenticate', array(
+            $database,
+            $username,
+            $api_key,
+            array()
+        ));
+
+        $auth_response = wp_remote_post($common_ep, [
+            'body'    => $auth_request,
+            'headers' => ['Content-Type' => 'text/xml'],
+            'timeout' => 30,
+            'sslverify' => false
+        ]);
+
+        if (is_wp_error($auth_response)) {
+            return 0;
+        }
+
+        $uid = xmlrpc_decode(wp_remote_retrieve_body($auth_response));
+        if (!is_numeric($uid)) {
+            return 0;
+        }
+
+        return $this->lookup_country_id($country_code, $database, $uid, $api_key, $object_ep);
+    }
+
+    /**
+     * Lookup country ID by code using Odoo RPC
+     */
+    private function lookup_country_id($code, $database, $uid, $api_key, $object_ep) {
+        if (!$code) return 0;
+        $code = strtoupper($code);
+
+        static $cache = [];
+        if (!isset($cache[$code])) {
+            $req = xmlrpc_encode_request('execute_kw', [
+                $database, $uid, $api_key,
+                'res.country', 'search',
+                [[['code', '=', $code]]], 0, 1
+            ]);
+
+            $resp = wp_remote_post($object_ep, [
+                'body'    => $req,
+                'headers' => ['Content-Type' => 'text/xml'],
+                'timeout' => 30,
+                'sslverify' => false
+            ]);
+
+            $ids = is_wp_error($resp) ? [] : xmlrpc_decode(wp_remote_retrieve_body($resp));
+            $cache[$code] = is_array($ids) && $ids ? $ids[0] : 0;
+        }
+
+        return $cache[$code];
+    }
+
+    /**
+     * Lookup state ID by name and country
+     */
+    private function lookup_state_id($name, $country_code, $database, $uid, $api_key, $object_ep) {
+        if (!$name) return 0;
+        $key = strtoupper(($country_code ?: 'CO') . '|' . $name);
+
+        static $cache = [];
+        if (!isset($cache[$key])) {
+            $domain = [ ['name', 'ilike', $name] ];
+            if ($country_code) {
+                $domain[] = ['country_id.code', '=', strtoupper($country_code)];
+            }
+
+            $req = xmlrpc_encode_request('execute_kw', [
+                $database, $uid, $api_key,
+                'res.country.state', 'search',
+                [$domain], 0, 1
+            ]);
+
+            $resp = wp_remote_post($object_ep, [
+                'body'    => $req,
+                'headers' => ['Content-Type' => 'text/xml'],
+                'timeout' => 30,
+                'sslverify' => false
+            ]);
+
+            $ids = is_wp_error($resp) ? [] : xmlrpc_decode(wp_remote_retrieve_body($resp));
+            $cache[$key] = is_array($ids) && $ids ? $ids[0] : 0;
+        }
+
+        return $cache[$key];
     }
 
     /**
