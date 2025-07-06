@@ -2184,12 +2184,12 @@ class OdooFlow {
                         'street',
                         'street2',
                         'city',
-                        'zip',
                         'country_id',
                         'state_id',
                         'vat',
                         'mobile',
-                        'company_name'
+                        'company_name',
+                        'l10n_latam_identification_type_id'
                     ),
                     'limit' => 500
                 )
@@ -2210,6 +2210,46 @@ class OdooFlow {
             if (!is_array($customers)) {
                 throw new Exception(__('Invalid response from Odoo.', 'odooflow'));
             }
+
+            $id_types = array();
+            foreach ($customers as $cust) {
+                $tid = $cust['l10n_latam_identification_type_id'] ?? null;
+                if (is_array($tid)) $tid = $tid[0];
+                if ($tid) $id_types[$tid] = true;
+            }
+
+            $type_codes = array();
+            if ($id_types) {
+                $read_req = xmlrpc_encode_request('execute_kw', array(
+                    $database, $uid, $api_key,
+                    'l10n_latam.identification.type', 'read',
+                    array(array_keys($id_types), array('code'))
+                ));
+                $read_resp = wp_remote_post($object_endpoint, [
+                    'body' => $read_req,
+                    'headers' => ['Content-Type' => 'text/xml'],
+                    'timeout' => 30,
+                    'sslverify' => false
+                ]);
+                if (!is_wp_error($read_resp)) {
+                    $read_data = xmlrpc_decode(wp_remote_retrieve_body($read_resp));
+                    if (is_array($read_data)) {
+                        foreach ($read_data as $row) {
+                            if (isset($row['id'], $row['code'])) {
+                                $type_codes[$row['id']] = $row['code'];
+                            }
+                        }
+                    }
+                }
+            }
+
+            foreach ($customers as &$cust) {
+                $tid = $cust['l10n_latam_identification_type_id'] ?? null;
+                if (is_array($tid)) $tid = $tid[0];
+                $cust['tipo_identificacion'] = $tid && isset($type_codes[$tid]) ? $type_codes[$tid] : '';
+                $cust['billing_id'] = $cust['vat'] ?? '';
+            }
+            unset($cust);
 
             $imported = 0;
             $skipped = 0;
@@ -2289,7 +2329,9 @@ class OdooFlow {
                 
                 // Store Odoo ID for future reference
                 update_user_meta($user_id, '_odoo_customer_id', $customer['id']);
-                
+                update_user_meta($user_id, 'tipo_identificacion', $customer['tipo_identificacion'] ?? '');
+                update_user_meta($user_id, 'billing_id', $customer['billing_id'] ?? '');
+
                 $imported++;
             }
 
@@ -2345,6 +2387,8 @@ class OdooFlow {
 
             // Update Odoo ID
             update_user_meta($user_id, '_odoo_customer_id', $odoo_customer['id']);
+            update_user_meta($user_id, 'tipo_identificacion', $odoo_customer['tipo_identificacion'] ?? '');
+            update_user_meta($user_id, 'billing_id', $odoo_customer['billing_id'] ?? '');
 
             return true;
         } catch (Exception $e) {
@@ -2352,6 +2396,57 @@ class OdooFlow {
             return false;
         }
     }
+
+    /* ==========  HELPER COLOMBIA DIAN  ========== */
+    private function oflow_add_col_fields( $source, array $payload,
+                                           string $database, int $uid,
+                                           string $api_key, string $object_ep ): array {
+
+        // --- 1. Lee los metadatos según sea WP_User o WC_Order ------------
+        $get_meta = $source instanceof WP_User
+            ? fn( $k ) => $source->get_meta( $k, true )
+            : fn( $k ) => $source->get_meta( $k );
+
+        $raw_vat  = $get_meta( 'billing_id' );           // número CC/NIT
+        $id_code  = strtoupper( $get_meta( 'tipo_identificacion' ) ); // 13,22,31...
+
+        // --- 2. Normaliza y asigna VAT ------------------------------------
+        if ( $raw_vat ) {
+            $payload['vat'] = preg_replace( '/[^A-Za-z0-9]/', '', $raw_vat );
+        }
+
+        // --- 3. Busca el ID many2one del tipo de documento -----------------
+        if ( $id_code ) {
+            static $cache = [];                          // evita consultas repetidas
+            if ( ! isset( $cache[ $id_code ] ) ) {
+
+                $search_req = xmlrpc_encode_request( 'execute_kw', [
+                    $database, $uid, $api_key,
+                    'l10n_latam.identification.type', 'search',
+                    [[
+                        ['code', '=', $id_code],
+                        ['country_id.code', '=', 'CO']
+                    ]], 0, 1
+                ] );
+
+                $resp  = wp_remote_post( $object_ep, [
+                            'body' => $search_req,
+                            'headers' => ['Content-Type'=>'text/xml'],
+                            'timeout'=>30, 'sslverify'=>false
+                         ] );
+                $ids   = is_wp_error( $resp ) ? [] :
+                         xmlrpc_decode( wp_remote_retrieve_body( $resp ) );
+                $cache[ $id_code ] = is_array( $ids ) && $ids ? $ids[0] : null;
+            }
+
+            if ( $cache[ $id_code ] ) {
+                $payload['l10n_latam_identification_type_id'] = $cache[ $id_code ];
+            }
+        }
+
+        return $payload;
+    }
+    /* ==========  FIN HELPER  ========== */
 
     /**
      * AJAX handler for exporting customers to Odoo
@@ -2456,16 +2551,22 @@ class OdooFlow {
 
                 // Prepare customer data
                 $customer_data = array(
-                    'name' => $wc_customer->get_first_name() . ' ' . $wc_customer->get_last_name(),
+                    'name'  => $wc_customer->get_first_name() . ' ' . $wc_customer->get_last_name(),
                     'email' => $wc_customer->get_email(),
                     'phone' => $wc_customer->get_billing_phone(),
-                    'street' => $wc_customer->get_billing_address_1(),
-                    'street2' => $wc_customer->get_billing_address_2(),
-                    'city' => $wc_customer->get_billing_city(),
-                    'zip' => $wc_customer->get_billing_postcode(),
-                    'company_name' => $wc_customer->get_billing_company(),
+                    'street'=> $wc_customer->get_billing_address_1(),
+                    'street2'=> $wc_customer->get_billing_address_2(),
+                    'city'  => $wc_customer->get_billing_city(),
                     'customer_rank' => 1,
-                    'type' => 'contact'
+                    'type'  => 'contact'
+                );
+
+                /* ➕  Enriquecemos con NIT + Tipo DIAN */
+                $customer_data = $this->oflow_add_col_fields(
+                    $wc_customer,
+                    $customer_data,
+                    $database, $uid, $api_key,
+                    $object_endpoint
                 );
 
                 if (!empty($existing_ids)) {
@@ -2619,7 +2720,7 @@ class OdooFlow {
 
             // Get order data
             error_log('OdooFlow: Preparing order data');
-            $order_data = $this->prepare_order_data($order);
+            $order_data = $this->prepare_order_data($order, $database, $uid, $api_key);
             error_log('OdooFlow: Order data prepared: ' . print_r($order_data, true));
             
             // Check if order exists in Odoo
@@ -2705,7 +2806,7 @@ class OdooFlow {
     /**
      * Prepare order data for Odoo
      */
-    private function prepare_order_data($order) {
+    private function prepare_order_data($order, $database, $uid, $api_key) {
         error_log('OdooFlow: Preparing order data for order #' . $order->get_id());
         
         $order_status = $order->get_status();
@@ -2714,7 +2815,7 @@ class OdooFlow {
         error_log('OdooFlow: Order status: ' . $order_status . ', Odoo order type: ' . $order_type);
 
         // Get or create customer in Odoo
-        $partner_id = $this->get_or_create_odoo_customer($order);
+        $partner_id = $this->get_or_create_odoo_customer($order, $database, $uid, $api_key);
         if (is_wp_error($partner_id)) {
             // phpcs:ignore WordPress.Security.EscapeOutput.ExceptionNotEscaped -- Log message, not HTML output.
             error_log('OdooFlow: Error getting/creating customer - ' . $partner_id->get_error_message());
@@ -2871,7 +2972,7 @@ class OdooFlow {
     /**
      * Get or create Odoo customer
      */
-    private function get_or_create_odoo_customer($order) {
+    private function get_or_create_odoo_customer($order, $database, $uid, $api_key) {
         $customer_id = $order->get_customer_id();
         if ($customer_id) {
             $odoo_customer_id = get_user_meta($customer_id, '_odoo_customer_id', true);
@@ -2880,21 +2981,37 @@ class OdooFlow {
 
         // Create customer in Odoo
         $customer_data = array(
-            'name' => $order->get_formatted_billing_full_name(),
+            'name'  => $order->get_formatted_billing_full_name(),
             'email' => $order->get_billing_email(),
             'phone' => $order->get_billing_phone(),
-            'street' => $order->get_billing_address_1(),
-            'street2' => $order->get_billing_address_2(),
-            'city' => $order->get_billing_city(),
-            'zip' => $order->get_billing_postcode(),
-            'country_id' => $this->get_country_id($order->get_billing_country()),
-            'customer_rank' => 1
+            'street'=> $order->get_billing_address_1(),
+            'street2'=> $order->get_billing_address_2(),
+            'city'  => $order->get_billing_city(),
+            'country_id' => $this->get_country_id( $order->get_billing_country() ),
+            'customer_rank' => 1,
+            'type'  => 'contact'
+        );
+
+        /* ➕  Enriquecer con los metadatos del pedido (guest checkout) */
+        $customer_data = $this->oflow_add_col_fields(
+            $order,
+            $customer_data,
+            $database, $uid, $api_key,
+            rtrim( get_option('odooflow_odoo_url',''), '/' ) . '/xmlrpc/2/object'
         );
 
         // Create customer in Odoo
         $result = $this->create_odoo_customer($customer_data);
         if (!is_wp_error($result) && $customer_id) {
             update_user_meta($customer_id, '_odoo_customer_id', $result);
+            $tipo_val = $order->get_meta('tipo_identificacion');
+            if ($tipo_val) {
+                update_user_meta($customer_id, 'tipo_identificacion', $tipo_val);
+            }
+            $vat_val = $order->get_meta('billing_id');
+            if ($vat_val) {
+                update_user_meta($customer_id, 'billing_id', $vat_val);
+            }
         }
 
         return $result;
