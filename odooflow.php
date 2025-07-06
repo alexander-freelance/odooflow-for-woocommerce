@@ -41,6 +41,18 @@ class OdooFlow {
      */
     protected static $_instance = null;
 
+    /** Odoo UID after authentication */
+    private $odoo_uid = null;
+
+    /** XML-RPC object endpoint */
+    private $odoo_object_ep = null;
+
+    /** Cached database name */
+    private $odoo_db = '';
+
+    /** Cached API key */
+    private $odoo_key = '';
+
     /**
      * Main OdooFlow Instance
      * 
@@ -85,6 +97,9 @@ class OdooFlow {
         add_action('wp_ajax_get_odoo_customers', array($this, 'ajax_get_odoo_customers'));
         add_action('wp_ajax_get_odoo_products_for_order', array($this, 'ajax_get_odoo_products_for_order'));
         add_action('wp_ajax_create_odoo_order', array($this, 'ajax_create_odoo_order'));
+
+        // Sync order when checkout completes
+        add_action('woocommerce_checkout_create_order', array($this, 'checkout_sync_order'), 10, 2);
         
         // Add order sync hooks
         add_filter('woocommerce_order_actions', array($this, 'add_order_sync_action'));
@@ -2424,8 +2439,7 @@ class OdooFlow {
                     $database, $uid, $api_key,
                     'l10n_latam.identification.type', 'search',
                     [[
-                        ['code', '=', $id_code],
-                        ['country_id.code', '=', 'CO']
+                        ['l10n_co_document_code', '=', $id_code]
                     ]], 0, 1
                 ] );
 
@@ -2462,43 +2476,16 @@ class OdooFlow {
             return;
         }
 
-        $odoo_url = get_option('odooflow_odoo_url', '');
-        $username = get_option('odooflow_username', '');
-        $api_key = get_option('odooflow_api_key', '');
-        $database = get_option('odooflow_database', '');
-
-        if (empty($odoo_url) || empty($username) || empty($api_key) || empty($database)) {
-            wp_send_json_error(array('message' => __('Odoo connection settings are incomplete.', 'odooflow')));
+        $uid = $this->authenticate_odoo();
+        if (is_wp_error($uid)) {
+            wp_send_json_error(array('message' => $uid->get_error_message()));
             return;
         }
+        $database = $this->odoo_db;
+        $api_key  = $this->odoo_key;
+        $object_endpoint = $this->odoo_object_ep;
 
         try {
-            // Authenticate with Odoo
-            $common_endpoint = rtrim($odoo_url, '/') . '/xmlrpc/2/common';
-            $object_endpoint = rtrim($odoo_url, '/') . '/xmlrpc/2/object';
-
-            $auth_request = xmlrpc_encode_request('authenticate', array(
-                $database,
-                $username,
-                $api_key,
-                array()
-            ));
-
-            $auth_response = wp_remote_post($common_endpoint, [
-                'body' => $auth_request,
-                'headers' => ['Content-Type' => 'text/xml'],
-                'timeout' => 30,
-                'sslverify' => false
-            ]);
-
-            if (is_wp_error($auth_response)) {
-                throw new Exception(__('Failed to connect to Odoo server.', 'odooflow'));
-            }
-
-            $uid = xmlrpc_decode(wp_remote_retrieve_body($auth_response));
-            if (!is_numeric($uid)) {
-                throw new Exception(__('Authentication failed.', 'odooflow'));
-            }
 
             // Get WooCommerce customers using WP_User_Query
             $args = array(
@@ -2550,15 +2537,21 @@ class OdooFlow {
                 $existing_ids = xmlrpc_decode(wp_remote_retrieve_body($search_response));
 
                 // Prepare customer data
+                $dept  = $wc_customer->get_meta('billing_departamento', true);
+                $city  = $wc_customer->get_meta('billing_ciudad', true);
+
                 $customer_data = array(
-                    'name'  => $wc_customer->get_first_name() . ' ' . $wc_customer->get_last_name(),
-                    'email' => $wc_customer->get_email(),
-                    'phone' => $wc_customer->get_billing_phone(),
-                    'street'=> $wc_customer->get_billing_address_1(),
-                    'street2'=> $wc_customer->get_billing_address_2(),
-                    'city'  => $wc_customer->get_billing_city(),
+                    'name'        => $wc_customer->get_first_name() . ' ' . $wc_customer->get_last_name(),
+                    'email'       => $wc_customer->get_email(),
+                    'phone'       => $wc_customer->get_billing_phone(),
+                    'street'      => $wc_customer->get_billing_address_1(),
+                    'street2'     => $wc_customer->get_billing_address_2(),
+                    'city'        => $city ?: $wc_customer->get_billing_city(),
+                    'zip'         => $wc_customer->get_billing_postcode(),
+                    'country_id'  => $this->get_country_id('CO'),
+                    'state_id'    => $this->get_state_id($dept),
                     'customer_rank' => 1,
-                    'type'  => 'contact'
+                    'type'        => 'contact'
                 );
 
                 /* ➕  Enriquecemos con NIT + Tipo DIAN */
@@ -2682,41 +2675,30 @@ class OdooFlow {
     }
 
     /**
+     * Trigger order sync right after checkout
+     */
+    public function checkout_sync_order($order, $data) {
+        $this->sync_order_to_odoo($order);
+    }
+
+    /**
      * Sync order to Odoo
      */
     private function sync_order_to_odoo($order) {
         error_log('OdooFlow: Starting order sync for order #' . $order->get_id());
         
-        $odoo_url = get_option('odooflow_odoo_url', '');
-        $username = get_option('odooflow_username', '');
-        $api_key = get_option('odooflow_api_key', '');
-        $database = get_option('odooflow_database', '');
-
-        if (empty($odoo_url) || empty($username) || empty($api_key) || empty($database)) {
-            $error_message = 'Odoo connection settings are incomplete.';
+        $uid = $this->authenticate_odoo();
+        if (is_wp_error($uid)) {
+            $error_message = $uid->get_error_message();
             error_log('OdooFlow: ' . $error_message);
-            //$order->add_order_note(__('Odoo Sync Failed: ' . $error_message, 'odooflow'));
-            // translators: %s is the error message explaining why the Odoo sync failed.
             $order->add_order_note(sprintf(__('Odoo Sync Failed: %s', 'odooflow'), $error_message));
-            //return new WP_Error('missing_credentials', __($error_message, 'odooflow'));
-            // translators: %s is the specific error message detailing why credentials are missing.
-            return new WP_Error('missing_credentials', sprintf(__('Missing credentials: %s', 'odooflow'), $error_message));
+            return $uid;
         }
 
+        $database = $this->odoo_db;
+        $api_key  = $this->odoo_key;
+
         try {
-            // Authenticate with Odoo
-            error_log('OdooFlow: Authenticating with Odoo server');
-            $auth_result = $this->authenticate_odoo($odoo_url, $database, $username, $api_key);
-            if (is_wp_error($auth_result)) {
-                $error_message = 'Authentication failed: ' . $auth_result->get_error_message();
-                error_log('OdooFlow: ' . $error_message);
-                
-                // translators: %s is the error message explaining why the Odoo sync failed.
-                $order->add_order_note(sprintf(__('Odoo Sync Failed: %s', 'odooflow'), $error_message));
-                return $auth_result;
-            }
-            $uid = $auth_result;
-            error_log('OdooFlow: Successfully authenticated with UID: ' . $uid);
 
             // Get order data
             error_log('OdooFlow: Preparing order data');
@@ -2729,7 +2711,7 @@ class OdooFlow {
             if ($odoo_order_id) {
                 error_log('OdooFlow: Updating existing Odoo order #' . $odoo_order_id);
                 // Update existing order
-                $result = $this->update_odoo_order($odoo_url, $database, $uid, $api_key, $odoo_order_id, $order_data);
+                $result = $this->update_odoo_order($odoo_order_id, $order_data);
                 if (!is_wp_error($result)) {
                     // translators: %s is the Odoo order ID.
                     $success_message = sprintf(__('Order successfully updated in Odoo (ID: %s)', 'odooflow'), $odoo_order_id);
@@ -2745,7 +2727,7 @@ class OdooFlow {
             } else {
                 error_log('OdooFlow: Creating new order in Odoo');
                 // Create new order
-                $result = $this->create_odoo_order($odoo_url, $database, $uid, $api_key, $order_data);
+                $result = $this->create_odoo_order($order_data);
                 if (!is_wp_error($result)) {
                     update_post_meta($order->get_id(), '_odoo_order_id', $result);
                     // translators: %s is the Odoo order ID.
@@ -2776,7 +2758,23 @@ class OdooFlow {
     /**
      * Authenticate with Odoo
      */
-    private function authenticate_odoo($odoo_url, $database, $username, $api_key) {
+    private function authenticate_odoo($odoo_url = '', $database = '', $username = '', $api_key = '') {
+        if ($this->odoo_uid && $this->odoo_object_ep) {
+            return $this->odoo_uid;
+        }
+
+        $odoo_url = $odoo_url ?: get_option('odooflow_odoo_url', '');
+        $database  = $database  ?: get_option('odooflow_database', '');
+        $username  = $username  ?: get_option('odooflow_username', '');
+        $api_key   = $api_key   ?: get_option('odooflow_api_key', '');
+
+        if (empty($odoo_url) || empty($database) || empty($username) || empty($api_key)) {
+            return new WP_Error('missing_credentials', __('Odoo connection settings are incomplete.', 'odooflow'));
+        }
+
+        $common_ep = rtrim($odoo_url, '/') . '/xmlrpc/2/common';
+        $this->odoo_object_ep = rtrim($odoo_url, '/') . '/xmlrpc/2/object';
+
         $auth_request = xmlrpc_encode_request('authenticate', array(
             $database,
             $username,
@@ -2784,7 +2782,7 @@ class OdooFlow {
             array()
         ));
 
-        $response = wp_remote_post(rtrim($odoo_url, '/') . '/xmlrpc/2/common', [
+        $response = wp_remote_post($common_ep, [
             'body' => $auth_request,
             'headers' => ['Content-Type' => 'text/xml'],
             'timeout' => 30,
@@ -2800,7 +2798,11 @@ class OdooFlow {
             return new WP_Error('auth_failed', __('Authentication failed.', 'odooflow'));
         }
 
-        return $uid;
+        $this->odoo_uid = (int) $uid;
+        $this->odoo_db  = $database;
+        $this->odoo_key = $api_key;
+
+        return $this->odoo_uid;
     }
 
     /**
@@ -2979,25 +2981,32 @@ class OdooFlow {
             if ($odoo_customer_id) return $odoo_customer_id;
         }
 
+        $dept = $order->get_meta('billing_departamento');
+        $city = $order->get_meta('billing_ciudad');
+
         // Create customer in Odoo
         $customer_data = array(
-            'name'  => $order->get_formatted_billing_full_name(),
-            'email' => $order->get_billing_email(),
-            'phone' => $order->get_billing_phone(),
-            'street'=> $order->get_billing_address_1(),
-            'street2'=> $order->get_billing_address_2(),
-            'city'  => $order->get_billing_city(),
-            'country_id' => $this->get_country_id( $order->get_billing_country() ),
+            'name'        => $order->get_formatted_billing_full_name(),
+            'email'       => $order->get_billing_email(),
+            'phone'       => $order->get_billing_phone(),
+            'street'      => $order->get_billing_address_1(),
+            'street2'     => $order->get_billing_address_2(),
+            'city'        => $city ?: $order->get_billing_city(),
+            'zip'         => $order->get_billing_postcode(),
+            'country_id'  => $this->get_country_id('CO'),
+            'state_id'    => $this->get_state_id($dept),
             'customer_rank' => 1,
-            'type'  => 'contact'
+            'type'        => 'contact'
         );
 
         /* ➕  Enriquecer con los metadatos del pedido (guest checkout) */
         $customer_data = $this->oflow_add_col_fields(
             $order,
             $customer_data,
-            $database, $uid, $api_key,
-            rtrim( get_option('odooflow_odoo_url',''), '/' ) . '/xmlrpc/2/object'
+            $database,
+            $uid,
+            $api_key,
+            $this->odoo_object_ep
         );
 
         // Create customer in Odoo
@@ -3021,10 +3030,33 @@ class OdooFlow {
      * Create customer in Odoo
      */
     private function create_odoo_customer($customer_data) {
-        // Implementation for creating customer in Odoo
-        // This would use the XML-RPC API to create a customer
-        // Return the Odoo customer ID or WP_Error
-        return 0; // Placeholder
+        $uid = $this->authenticate_odoo();
+        if (is_wp_error($uid)) {
+            return $uid;
+        }
+
+        $request = xmlrpc_encode_request('execute_kw', array(
+            $this->odoo_db,
+            $uid,
+            $this->odoo_key,
+            'res.partner',
+            'create',
+            array($customer_data)
+        ));
+
+        $response = wp_remote_post($this->odoo_object_ep, array(
+            'body' => $request,
+            'headers' => array('Content-Type' => 'text/xml'),
+            'timeout' => 30,
+            'sslverify' => false
+        ));
+
+        if (is_wp_error($response)) {
+            return $response;
+        }
+
+        $id = xmlrpc_decode(wp_remote_retrieve_body($response));
+        return is_numeric($id) ? (int)$id : new WP_Error('create_failed', __('Failed to create customer in Odoo', 'odooflow'));
     }
 
     /**
@@ -3083,27 +3115,100 @@ class OdooFlow {
      * Get country ID from Odoo
      */
     private function get_country_id($country_code) {
-        // Implementation to get country ID from Odoo
-        // This would need to be cached for performance
-        return 0; // Placeholder
+        static $cache = array();
+        if (isset($cache[$country_code])) {
+            return $cache[$country_code];
+        }
+
+        $uid = $this->authenticate_odoo();
+        if (is_wp_error($uid)) {
+            return 0;
+        }
+
+        $search_req = xmlrpc_encode_request('execute_kw', array(
+            $this->odoo_db,
+            $uid,
+            $this->odoo_key,
+            'res.country',
+            'search',
+            array(array(array('code', '=', $country_code))),
+            0,
+            1
+        ));
+
+        $resp = wp_remote_post($this->odoo_object_ep, array(
+            'body' => $search_req,
+            'headers' => array('Content-Type' => 'text/xml'),
+            'timeout' => 30,
+            'sslverify' => false
+        ));
+
+        $ids = is_wp_error($resp) ? array() : xmlrpc_decode(wp_remote_retrieve_body($resp));
+        $cache[$country_code] = is_array($ids) && $ids ? (int)$ids[0] : 0;
+        return $cache[$country_code];
+    }
+
+    /**
+     * Get state ID from Odoo (departments of Colombia)
+     */
+    private function get_state_id($state_code) {
+        static $cache = array();
+        if (isset($cache[$state_code])) {
+            return $cache[$state_code];
+        }
+
+        $uid = $this->authenticate_odoo();
+        if (is_wp_error($uid)) {
+            return 0;
+        }
+
+        $search_req = xmlrpc_encode_request('execute_kw', array(
+            $this->odoo_db,
+            $uid,
+            $this->odoo_key,
+            'res.country.state',
+            'search',
+            array(array(
+                array('code', '=', $state_code),
+                array('country_id.code', '=', 'CO')
+            )),
+            0,
+            1
+        ));
+
+        $resp = wp_remote_post($this->odoo_object_ep, array(
+            'body' => $search_req,
+            'headers' => array('Content-Type' => 'text/xml'),
+            'timeout' => 30,
+            'sslverify' => false
+        ));
+
+        $ids = is_wp_error($resp) ? array() : xmlrpc_decode(wp_remote_retrieve_body($resp));
+        $cache[$state_code] = is_array($ids) && $ids ? (int)$ids[0] : 0;
+        return $cache[$state_code];
     }
 
     /**
      * Create order in Odoo
      */
-    private function create_odoo_order($odoo_url, $database, $uid, $api_key, $order_data) {
+    private function create_odoo_order($order_data) {
         error_log('OdooFlow: Creating order in Odoo with data: ' . print_r($order_data, true));
-        
+
+        $uid = $this->authenticate_odoo();
+        if (is_wp_error($uid)) {
+            return $uid;
+        }
+
         $request = xmlrpc_encode_request('execute_kw', array(
-            $database,
+            $this->odoo_db,
             $uid,
-            $api_key,
+            $this->odoo_key,
             'sale.order',
             'create',
             array($order_data)
         ));
 
-        $response = wp_remote_post(rtrim($odoo_url, '/') . '/xmlrpc/2/object', [
+        $response = wp_remote_post($this->odoo_object_ep, [
             'body' => $request,
             'headers' => ['Content-Type' => 'text/xml'],
             'timeout' => 30,
@@ -3130,20 +3235,25 @@ class OdooFlow {
     /**
      * Update order in Odoo
      */
-    private function update_odoo_order($odoo_url, $database, $uid, $api_key, $odoo_order_id, $order_data) {
+    private function update_odoo_order($odoo_order_id, $order_data) {
         error_log('OdooFlow: Updating order in Odoo - ID: ' . $odoo_order_id);
         error_log('OdooFlow: Update data: ' . print_r($order_data, true));
-        
+
+        $uid = $this->authenticate_odoo();
+        if (is_wp_error($uid)) {
+            return $uid;
+        }
+
         $request = xmlrpc_encode_request('execute_kw', array(
-            $database,
+            $this->odoo_db,
             $uid,
-            $api_key,
+            $this->odoo_key,
             'sale.order',
             'write',
             array(array($odoo_order_id), $order_data)
         ));
 
-        $response = wp_remote_post(rtrim($odoo_url, '/') . '/xmlrpc/2/object', [
+        $response = wp_remote_post($this->odoo_object_ep, [
             'body' => $request,
             'headers' => ['Content-Type' => 'text/xml'],
             'timeout' => 30,
@@ -3350,22 +3460,14 @@ class OdooFlow {
             wp_send_json_error(array('message' => __('You do not have permission to perform this action.', 'odooflow')));
         }
 
-        $odoo_url = get_option('odooflow_odoo_url', '');
-        $username = get_option('odooflow_username', '');
-        $api_key = get_option('odooflow_api_key', '');
-        $database = get_option('odooflow_database', '');
-
-        if (empty($odoo_url) || empty($username) || empty($api_key) || empty($database)) {
-            wp_send_json_error(array('message' => __('Odoo connection settings are incomplete.', 'odooflow')));
+        $uid = $this->authenticate_odoo();
+        if (is_wp_error($uid)) {
+            wp_send_json_error(array('message' => $uid->get_error_message()));
         }
+        $database = $this->odoo_db;
+        $api_key  = $this->odoo_key;
 
         try {
-            // Authenticate with Odoo
-            $auth_result = $this->authenticate_odoo($odoo_url, $database, $username, $api_key);
-            if (is_wp_error($auth_result)) {
-                throw new Exception($auth_result->get_error_message());
-            }
-            $uid = $auth_result;
 
             // Search for customers
             $request = xmlrpc_encode_request('execute_kw', array(
@@ -3552,7 +3654,7 @@ class OdooFlow {
                 array($order_data)
             ));
 
-            $response = wp_remote_post(rtrim($odoo_url, '/') . '/xmlrpc/2/object', array(
+            $response = wp_remote_post($this->odoo_object_ep, array(
                 'body' => $request,
                 'headers' => array('Content-Type' => 'text/xml'),
                 'timeout' => 30,
@@ -3579,7 +3681,7 @@ class OdooFlow {
                     array(array($odoo_order_id))
                 ));
 
-                $confirm_response = wp_remote_post(rtrim($odoo_url, '/') . '/xmlrpc/2/object', array(
+                $confirm_response = wp_remote_post($this->odoo_object_ep, array(
                     'body' => $confirm_request,
                     'headers' => array('Content-Type' => 'text/xml'),
                     'timeout' => 30,
