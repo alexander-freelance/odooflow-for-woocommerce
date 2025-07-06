@@ -3108,7 +3108,7 @@ class OdooFlow {
         );
 
         // Create customer in Odoo
-        $result = $this->create_odoo_customer($customer_data);
+        $result = $this->create_odoo_customer($customer_data, $database, $uid, $api_key);
         if (!is_wp_error($result) && $customer_id) {
             update_user_meta($customer_id, '_odoo_customer_id', $result);
             $tipo_val = $order->get_meta('tipo_identificacion');
@@ -3127,11 +3127,39 @@ class OdooFlow {
     /**
      * Create customer in Odoo
      */
-    private function create_odoo_customer($customer_data) {
-        // Implementation for creating customer in Odoo
-        // This would use the XML-RPC API to create a customer
-        // Return the Odoo customer ID or WP_Error
-        return 0; // Placeholder
+    private function create_odoo_customer($customer_data, $database, $uid, $api_key) {
+        $odoo_url = get_option('odooflow_odoo_url', '');
+        if (!$odoo_url) {
+            return new WP_Error('missing_url', __('Odoo URL is not configured.', 'odooflow'));
+        }
+
+        $object_ep = rtrim($odoo_url, '/') . '/xmlrpc/2/object';
+        $request = xmlrpc_encode_request('execute_kw', array(
+            $database,
+            $uid,
+            $api_key,
+            'res.partner',
+            'create',
+            array($customer_data)
+        ));
+
+        $response = wp_remote_post($object_ep, array(
+            'body' => $request,
+            'headers' => array('Content-Type' => 'text/xml'),
+            'timeout' => 30,
+            'sslverify' => false
+        ));
+
+        if (is_wp_error($response)) {
+            return new WP_Error('create_error', $response->get_error_message());
+        }
+
+        $result = xmlrpc_decode(wp_remote_retrieve_body($response));
+        if (!is_numeric($result)) {
+            return new WP_Error('invalid_response', __('Invalid response from Odoo when creating customer.', 'odooflow'));
+        }
+
+        return $result;
     }
 
     /**
