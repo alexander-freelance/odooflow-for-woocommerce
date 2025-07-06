@@ -2184,12 +2184,12 @@ class OdooFlow {
                         'street',
                         'street2',
                         'city',
-                        'zip',
                         'country_id',
                         'state_id',
                         'vat',
                         'mobile',
-                        'company_name'
+                        'company_name',
+                        'l10n_latam_identification_type_id'
                     ),
                     'limit' => 500
                 )
@@ -2210,6 +2210,126 @@ class OdooFlow {
             if (!is_array($customers)) {
                 throw new Exception(__('Invalid response from Odoo.', 'odooflow'));
             }
+
+            $id_types = array();
+            $country_ids = array();
+            $state_ids = array();
+            foreach ($customers as $cust) {
+                $tid = $cust['l10n_latam_identification_type_id'] ?? null;
+                if (is_array($tid)) $tid = $tid[0];
+                if ($tid) $id_types[$tid] = true;
+
+                $cid = $cust['country_id'] ?? null;
+                if (is_array($cid)) $cid = $cid[0];
+                if ($cid) $country_ids[$cid] = true;
+
+                $sid = $cust['state_id'] ?? null;
+                if (is_array($sid)) $sid = $sid[0];
+                if ($sid) $state_ids[$sid] = true;
+            }
+
+            $type_codes = array();
+            if ($id_types) {
+                $read_req = xmlrpc_encode_request('execute_kw', array(
+                    $database, $uid, $api_key,
+                    'l10n_latam.identification.type', 'read',
+                    array(array_keys($id_types), array('l10n_co_document_code'))
+                ));
+                $read_resp = wp_remote_post($object_endpoint, [
+                    'body' => $read_req,
+                    'headers' => ['Content-Type' => 'text/xml'],
+                    'timeout' => 30,
+                    'sslverify' => false
+                ]);
+                if (!is_wp_error($read_resp)) {
+                    $read_data = xmlrpc_decode(wp_remote_retrieve_body($read_resp));
+                    if (is_array($read_data)) {
+                        $reverse_map = array(
+                            'rut' => '31',
+                            'national_citizen_id' => '13',
+                            'civil_registration' => '11',
+                            'id_card' => '12',
+                            'foreign_colombian_card' => '21',
+                            'foreign_resident_card' => '22',
+                            'passport' => '41',
+                            'foreign_id_card' => '42',
+                            'PEP' => '47',
+                            'niup_id' => '91',
+                            'diplomatic_card' => '46'
+                        );
+                        foreach ($read_data as $row) {
+                            if (isset($row['id'], $row['l10n_co_document_code'])) {
+                                $doc = $row['l10n_co_document_code'];
+                                $type_codes[$row['id']] = $reverse_map[$doc] ?? $doc;
+                            }
+                        }
+                    }
+                }
+            }
+
+            $country_codes = array();
+            if ($country_ids) {
+                $read_req = xmlrpc_encode_request('execute_kw', array(
+                    $database, $uid, $api_key,
+                    'res.country', 'read',
+                    array(array_keys($country_ids), array('code'))
+                ));
+                $read_resp = wp_remote_post($object_endpoint, [
+                    'body' => $read_req,
+                    'headers' => ['Content-Type' => 'text/xml'],
+                    'timeout' => 30,
+                    'sslverify' => false
+                ]);
+                if (!is_wp_error($read_resp)) {
+                    $read_data = xmlrpc_decode(wp_remote_retrieve_body($read_resp));
+                    if (is_array($read_data)) {
+                        foreach ($read_data as $row) {
+                            if (isset($row['id'], $row['code'])) {
+                                $country_codes[$row['id']] = $row['code'];
+                            }
+                        }
+                    }
+                }
+            }
+
+            $state_codes = array();
+            if ($state_ids) {
+                $read_req = xmlrpc_encode_request('execute_kw', array(
+                    $database, $uid, $api_key,
+                    'res.country.state', 'read',
+                    array(array_keys($state_ids), array('code'))
+                ));
+                $read_resp = wp_remote_post($object_endpoint, [
+                    'body' => $read_req,
+                    'headers' => ['Content-Type' => 'text/xml'],
+                    'timeout' => 30,
+                    'sslverify' => false
+                ]);
+                if (!is_wp_error($read_resp)) {
+                    $read_data = xmlrpc_decode(wp_remote_retrieve_body($read_resp));
+                    if (is_array($read_data)) {
+                        foreach ($read_data as $row) {
+                            if (isset($row['id'], $row['code'])) {
+                                $state_codes[$row['id']] = $row['code'];
+                            }
+                        }
+                    }
+                }
+            }
+
+            foreach ($customers as &$cust) {
+                $tid = $cust['l10n_latam_identification_type_id'] ?? null;
+                if (is_array($tid)) $tid = $tid[0];
+                $cust['tipo_identificacion'] = $tid && isset($type_codes[$tid]) ? $type_codes[$tid] : '';
+                $cust['billing_id'] = $cust['vat'] ?? '';
+                $cid = $cust['country_id'] ?? null;
+                if (is_array($cid)) $cid = $cid[0];
+                $cust['country_code'] = $cid && isset($country_codes[$cid]) ? $country_codes[$cid] : '';
+                $sid = $cust['state_id'] ?? null;
+                if (is_array($sid)) $sid = $sid[0];
+                $cust['state_code'] = $sid && isset($state_codes[$sid]) ? $state_codes[$sid] : '';
+            }
+            unset($cust);
 
             $imported = 0;
             $skipped = 0;
@@ -2271,6 +2391,8 @@ class OdooFlow {
                 $wc_customer->set_billing_address_1($customer['street'] ?? '');
                 $wc_customer->set_billing_address_2($customer['street2'] ?? '');
                 $wc_customer->set_billing_city($customer['city'] ?? '');
+                $wc_customer->set_billing_state($customer['state_code'] ?? '');
+                $wc_customer->set_billing_country($customer['country_code'] ?? '');
                 $wc_customer->set_billing_postcode($customer['zip'] ?? '');
                 $wc_customer->set_billing_phone($customer['phone'] ?? $customer['mobile'] ?? '');
                 $wc_customer->set_billing_email($customer['email']);
@@ -2282,6 +2404,8 @@ class OdooFlow {
                 $wc_customer->set_shipping_address_1($customer['street'] ?? '');
                 $wc_customer->set_shipping_address_2($customer['street2'] ?? '');
                 $wc_customer->set_shipping_city($customer['city'] ?? '');
+                $wc_customer->set_shipping_state($customer['state_code'] ?? '');
+                $wc_customer->set_shipping_country($customer['country_code'] ?? '');
                 $wc_customer->set_shipping_postcode($customer['zip'] ?? '');
 
                 // Save the customer
@@ -2289,7 +2413,9 @@ class OdooFlow {
                 
                 // Store Odoo ID for future reference
                 update_user_meta($user_id, '_odoo_customer_id', $customer['id']);
-                
+                update_user_meta($user_id, 'tipo_identificacion', $customer['tipo_identificacion'] ?? '');
+                update_user_meta($user_id, 'billing_id', $customer['billing_id'] ?? '');
+
                 $imported++;
             }
 
@@ -2345,6 +2471,8 @@ class OdooFlow {
 
             // Update Odoo ID
             update_user_meta($user_id, '_odoo_customer_id', $odoo_customer['id']);
+            update_user_meta($user_id, 'tipo_identificacion', $odoo_customer['tipo_identificacion'] ?? '');
+            update_user_meta($user_id, 'billing_id', $odoo_customer['billing_id'] ?? '');
 
             return true;
         } catch (Exception $e) {
@@ -2352,6 +2480,71 @@ class OdooFlow {
             return false;
         }
     }
+
+    /* ==========  HELPER COLOMBIA DIAN  ========== */
+    private function oflow_add_col_fields( $source, array $payload,
+                                           string $database, int $uid,
+                                           string $api_key, string $object_ep ): array {
+
+        // --- 1. Lee los metadatos según sea WP_User o WC_Order ------------
+        $get_meta = $source instanceof WP_User
+            ? fn( $k ) => $source->get_meta( $k, true )
+            : fn( $k ) => $source->get_meta( $k );
+
+        $raw_vat  = $get_meta( 'billing_id' );           // número CC/NIT
+        $id_raw   = trim( $get_meta( 'tipo_identificacion' ) );
+        $map      = array(
+            '13' => 'national_citizen_id',
+            '11' => 'civil_registration',
+            '12' => 'id_card',
+            '21' => 'foreign_colombian_card',
+            '22' => 'foreign_resident_card',
+            '31' => 'rut',
+            '41' => 'passport',
+            '42' => 'foreign_id_card',
+            '47' => 'PEP',
+            '91' => 'niup_id',
+            '46' => 'diplomatic_card'
+        );
+        $id_code  = $map[$id_raw] ?? strtolower($id_raw);
+
+        // --- 2. Normaliza y asigna VAT ------------------------------------
+        if ( $raw_vat ) {
+            $payload['vat'] = preg_replace( '/[^A-Za-z0-9]/', '', $raw_vat );
+        }
+
+        // --- 3. Busca el ID many2one del tipo de documento -----------------
+        if ( $id_code ) {
+            static $cache = [];                          // evita consultas repetidas
+            if ( ! isset( $cache[ $id_code ] ) ) {
+
+                $search_req = xmlrpc_encode_request( 'execute_kw', [
+                    $database, $uid, $api_key,
+                    'l10n_latam.identification.type', 'search',
+                    [[
+                        ['l10n_co_document_code', '=', $id_code],
+                        ['country_id.code', '=', 'CO']
+                    ]], 0, 1
+                ] );
+
+                $resp  = wp_remote_post( $object_ep, [
+                            'body' => $search_req,
+                            'headers' => ['Content-Type'=>'text/xml'],
+                            'timeout'=>30, 'sslverify'=>false
+                         ] );
+                $ids   = is_wp_error( $resp ) ? [] :
+                         xmlrpc_decode( wp_remote_retrieve_body( $resp ) );
+                $cache[ $id_code ] = is_array( $ids ) && $ids ? $ids[0] : null;
+            }
+
+            if ( $cache[ $id_code ] ) {
+                $payload['l10n_latam_identification_type_id'] = $cache[ $id_code ];
+            }
+        }
+
+        return $payload;
+    }
+    /* ==========  FIN HELPER  ========== */
 
     /**
      * AJAX handler for exporting customers to Odoo
@@ -2455,17 +2648,28 @@ class OdooFlow {
                 $existing_ids = xmlrpc_decode(wp_remote_retrieve_body($search_response));
 
                 // Prepare customer data
+                $country_id = $this->get_country_id($wc_customer->get_billing_country(), $database, $uid, $api_key);
+                $state_id   = $this->get_state_id($wc_customer->get_billing_state(), $country_id, $database, $uid, $api_key);
+
                 $customer_data = array(
-                    'name' => $wc_customer->get_first_name() . ' ' . $wc_customer->get_last_name(),
-                    'email' => $wc_customer->get_email(),
-                    'phone' => $wc_customer->get_billing_phone(),
-                    'street' => $wc_customer->get_billing_address_1(),
-                    'street2' => $wc_customer->get_billing_address_2(),
-                    'city' => $wc_customer->get_billing_city(),
-                    'zip' => $wc_customer->get_billing_postcode(),
-                    'company_name' => $wc_customer->get_billing_company(),
+                    'name'       => $wc_customer->get_first_name() . ' ' . $wc_customer->get_last_name(),
+                    'email'      => $wc_customer->get_email(),
+                    'phone'      => $wc_customer->get_billing_phone(),
+                    'street'     => $wc_customer->get_billing_address_1(),
+                    'street2'    => $wc_customer->get_billing_address_2(),
+                    'city'       => $wc_customer->get_billing_city(),
+                    'country_id' => $country_id,
+                    'state_id'   => $state_id,
                     'customer_rank' => 1,
-                    'type' => 'contact'
+                    'type'       => 'contact'
+                );
+
+                /* ➕  Enriquecemos con NIT + Tipo DIAN */
+                $customer_data = $this->oflow_add_col_fields(
+                    $wc_customer,
+                    $customer_data,
+                    $database, $uid, $api_key,
+                    $object_endpoint
                 );
 
                 if (!empty($existing_ids)) {
@@ -2619,7 +2823,7 @@ class OdooFlow {
 
             // Get order data
             error_log('OdooFlow: Preparing order data');
-            $order_data = $this->prepare_order_data($order);
+            $order_data = $this->prepare_order_data($order, $database, $uid, $api_key);
             error_log('OdooFlow: Order data prepared: ' . print_r($order_data, true));
             
             // Check if order exists in Odoo
@@ -2705,7 +2909,7 @@ class OdooFlow {
     /**
      * Prepare order data for Odoo
      */
-    private function prepare_order_data($order) {
+    private function prepare_order_data($order, $database, $uid, $api_key) {
         error_log('OdooFlow: Preparing order data for order #' . $order->get_id());
         
         $order_status = $order->get_status();
@@ -2714,7 +2918,7 @@ class OdooFlow {
         error_log('OdooFlow: Order status: ' . $order_status . ', Odoo order type: ' . $order_type);
 
         // Get or create customer in Odoo
-        $partner_id = $this->get_or_create_odoo_customer($order);
+        $partner_id = $this->get_or_create_odoo_customer($order, $database, $uid, $api_key);
         if (is_wp_error($partner_id)) {
             // phpcs:ignore WordPress.Security.EscapeOutput.ExceptionNotEscaped -- Log message, not HTML output.
             error_log('OdooFlow: Error getting/creating customer - ' . $partner_id->get_error_message());
@@ -2871,7 +3075,7 @@ class OdooFlow {
     /**
      * Get or create Odoo customer
      */
-    private function get_or_create_odoo_customer($order) {
+    private function get_or_create_odoo_customer($order, $database, $uid, $api_key) {
         $customer_id = $order->get_customer_id();
         if ($customer_id) {
             $odoo_customer_id = get_user_meta($customer_id, '_odoo_customer_id', true);
@@ -2879,22 +3083,42 @@ class OdooFlow {
         }
 
         // Create customer in Odoo
+        $country_id = $this->get_country_id($order->get_billing_country(), $database, $uid, $api_key);
+        $state_id   = $this->get_state_id($order->get_billing_state(), $country_id, $database, $uid, $api_key);
+
         $customer_data = array(
-            'name' => $order->get_formatted_billing_full_name(),
-            'email' => $order->get_billing_email(),
-            'phone' => $order->get_billing_phone(),
-            'street' => $order->get_billing_address_1(),
-            'street2' => $order->get_billing_address_2(),
-            'city' => $order->get_billing_city(),
-            'zip' => $order->get_billing_postcode(),
-            'country_id' => $this->get_country_id($order->get_billing_country()),
-            'customer_rank' => 1
+            'name'       => $order->get_formatted_billing_full_name(),
+            'email'      => $order->get_billing_email(),
+            'phone'      => $order->get_billing_phone(),
+            'street'     => $order->get_billing_address_1(),
+            'street2'    => $order->get_billing_address_2(),
+            'city'       => $order->get_billing_city(),
+            'country_id' => $country_id,
+            'state_id'   => $state_id,
+            'customer_rank' => 1,
+            'type'       => 'contact'
+        );
+
+        /* ➕  Enriquecer con los metadatos del pedido (guest checkout) */
+        $customer_data = $this->oflow_add_col_fields(
+            $order,
+            $customer_data,
+            $database, $uid, $api_key,
+            rtrim( get_option('odooflow_odoo_url',''), '/' ) . '/xmlrpc/2/object'
         );
 
         // Create customer in Odoo
         $result = $this->create_odoo_customer($customer_data);
         if (!is_wp_error($result) && $customer_id) {
             update_user_meta($customer_id, '_odoo_customer_id', $result);
+            $tipo_val = $order->get_meta('tipo_identificacion');
+            if ($tipo_val) {
+                update_user_meta($customer_id, 'tipo_identificacion', $tipo_val);
+            }
+            $vat_val = $order->get_meta('billing_id');
+            if ($vat_val) {
+                update_user_meta($customer_id, 'billing_id', $vat_val);
+            }
         }
 
         return $result;
@@ -2965,10 +3189,76 @@ class OdooFlow {
     /**
      * Get country ID from Odoo
      */
-    private function get_country_id($country_code) {
-        // Implementation to get country ID from Odoo
-        // This would need to be cached for performance
-        return 0; // Placeholder
+    private function get_country_id($country_code, $database, $uid, $api_key) {
+        $country_code = strtoupper(trim($country_code));
+        if (!$country_code) {
+            return 0;
+        }
+
+        static $cache = array();
+        if (!isset($cache[$country_code])) {
+            $object_ep = rtrim(get_option('odooflow_odoo_url', ''), '/') . '/xmlrpc/2/object';
+            $req = xmlrpc_encode_request('execute_kw', array(
+                $database,
+                $uid,
+                $api_key,
+                'res.country',
+                'search',
+                array(array(array('code', '=', $country_code))),
+                0,
+                1
+            ));
+
+            $resp = wp_remote_post($object_ep, array(
+                'body' => $req,
+                'headers' => array('Content-Type' => 'text/xml'),
+                'timeout' => 30,
+                'sslverify' => false
+            ));
+
+            $ids = is_wp_error($resp) ? array() : xmlrpc_decode(wp_remote_retrieve_body($resp));
+            $cache[$country_code] = (is_array($ids) && $ids) ? $ids[0] : 0;
+        }
+
+        return $cache[$country_code];
+    }
+
+    private function get_state_id($state_code, $country_id, $database, $uid, $api_key) {
+        $state_code = strtoupper(trim($state_code));
+        if (!$state_code || !$country_id) {
+            return 0;
+        }
+
+        $key = $country_id . ':' . $state_code;
+        static $cache = array();
+        if (!isset($cache[$key])) {
+            $object_ep = rtrim(get_option('odooflow_odoo_url', ''), '/') . '/xmlrpc/2/object';
+            $req = xmlrpc_encode_request('execute_kw', array(
+                $database,
+                $uid,
+                $api_key,
+                'res.country.state',
+                'search',
+                array(array(
+                    array('code', '=', $state_code),
+                    array('country_id', '=', $country_id)
+                )),
+                0,
+                1
+            ));
+
+            $resp = wp_remote_post($object_ep, array(
+                'body' => $req,
+                'headers' => array('Content-Type' => 'text/xml'),
+                'timeout' => 30,
+                'sslverify' => false
+            ));
+
+            $ids = is_wp_error($resp) ? array() : xmlrpc_decode(wp_remote_retrieve_body($resp));
+            $cache[$key] = (is_array($ids) && $ids) ? $ids[0] : 0;
+        }
+
+        return $cache[$key];
     }
 
     /**
