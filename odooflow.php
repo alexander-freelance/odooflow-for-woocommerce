@@ -2212,10 +2212,22 @@ class OdooFlow {
             }
 
             $id_types = array();
+            $country_ids = array();
+            $state_ids   = array();
             foreach ($customers as $cust) {
                 $tid = $cust['l10n_latam_identification_type_id'] ?? null;
                 if (is_array($tid)) $tid = $tid[0];
                 if ($tid) $id_types[$tid] = true;
+
+                $cid = $cust['country_id'] ?? null;
+                if (is_array($cid) && $cid) {
+                    $country_ids[$cid[0]] = true;
+                }
+
+                $sid = $cust['state_id'] ?? null;
+                if (is_array($sid) && $sid) {
+                    $state_ids[$sid[0]] = true;
+                }
             }
 
             $type_codes = array();
@@ -2223,7 +2235,7 @@ class OdooFlow {
                 $read_req = xmlrpc_encode_request('execute_kw', array(
                     $database, $uid, $api_key,
                     'l10n_latam.identification.type', 'read',
-                    array(array_keys($id_types), array('code'))
+                    array(array_keys($id_types), array('l10n_co_document_code'))
                 ));
                 $read_resp = wp_remote_post($object_endpoint, [
                     'body' => $read_req,
@@ -2235,19 +2247,85 @@ class OdooFlow {
                     $read_data = xmlrpc_decode(wp_remote_retrieve_body($read_resp));
                     if (is_array($read_data)) {
                         foreach ($read_data as $row) {
-                            if (isset($row['id'], $row['code'])) {
-                                $type_codes[$row['id']] = $row['code'];
+                            if (isset($row['id'], $row['l10n_co_document_code'])) {
+                                $type_codes[$row['id']] = $row['l10n_co_document_code'];
                             }
                         }
                     }
                 }
             }
 
+            $country_map = array();
+            if ($country_ids) {
+                $read_req = xmlrpc_encode_request('execute_kw', array(
+                    $database, $uid, $api_key,
+                    'res.country', 'read',
+                    array(array_keys($country_ids), array('code'))
+                ));
+                $read_resp = wp_remote_post($object_endpoint, [
+                    'body'    => $read_req,
+                    'headers' => ['Content-Type' => 'text/xml'],
+                    'timeout' => 30,
+                    'sslverify' => false
+                ]);
+                if (!is_wp_error($read_resp)) {
+                    $read_data = xmlrpc_decode(wp_remote_retrieve_body($read_resp));
+                    if (is_array($read_data)) {
+                        foreach ($read_data as $row) {
+                            if (isset($row['id'], $row['code'])) {
+                                $country_map[$row['id']] = $row['code'];
+                            }
+                        }
+                    }
+                }
+            }
+
+            $state_map = array();
+            if ($state_ids) {
+                $read_req = xmlrpc_encode_request('execute_kw', array(
+                    $database, $uid, $api_key,
+                    'res.country.state', 'read',
+                    array(array_keys($state_ids), array('name'))
+                ));
+                $read_resp = wp_remote_post($object_endpoint, [
+                    'body'    => $read_req,
+                    'headers' => ['Content-Type' => 'text/xml'],
+                    'timeout' => 30,
+                    'sslverify' => false
+                ]);
+                if (!is_wp_error($read_resp)) {
+                    $read_data = xmlrpc_decode(wp_remote_retrieve_body($read_resp));
+                    if (is_array($read_data)) {
+                        foreach ($read_data as $row) {
+                            if (isset($row['id'], $row['name'])) {
+                                $state_map[$row['id']] = $row['name'];
+                            }
+                        }
+                    }
+                }
+            }
+
+            $reverse_tipo = array_flip($this->oflow_tipo_map());
             foreach ($customers as &$cust) {
                 $tid = $cust['l10n_latam_identification_type_id'] ?? null;
                 if (is_array($tid)) $tid = $tid[0];
-                $cust['tipo_identificacion'] = $tid && isset($type_codes[$tid]) ? $type_codes[$tid] : '';
+                if ($tid && isset($type_codes[$tid])) {
+                    $code = $type_codes[$tid];
+                    $cust['tipo_identificacion'] = $reverse_tipo[$code] ?? $code;
+                } else {
+                    $cust['tipo_identificacion'] = '';
+                }
                 $cust['billing_id'] = $cust['vat'] ?? '';
+
+                $cid = $cust['country_id'] ?? null;
+                if (is_array($cid)) {
+                    $cust['billing_country'] = $country_map[$cid[0]] ?? '';
+                }
+
+                $sid = $cust['state_id'] ?? null;
+                if (is_array($sid)) {
+                    $cust['billing_departamento'] = $state_map[$sid[0]] ?? '';
+                }
             }
             unset($cust);
 
@@ -2312,6 +2390,14 @@ class OdooFlow {
                 $wc_customer->set_billing_address_2($customer['street2'] ?? '');
                 $wc_customer->set_billing_city($customer['city'] ?? '');
                 $wc_customer->set_billing_postcode($customer['zip'] ?? '');
+                if (!empty($customer['billing_country'])) {
+                    $wc_customer->set_billing_country($customer['billing_country']);
+                    $wc_customer->set_shipping_country($customer['billing_country']);
+                }
+                if (!empty($customer['billing_departamento'])) {
+                    $wc_customer->set_billing_state($customer['billing_departamento']);
+                    $wc_customer->set_shipping_state($customer['billing_departamento']);
+                }
                 $wc_customer->set_billing_phone($customer['phone'] ?? $customer['mobile'] ?? '');
                 $wc_customer->set_billing_email($customer['email']);
 
@@ -2331,6 +2417,12 @@ class OdooFlow {
                 update_user_meta($user_id, '_odoo_customer_id', $customer['id']);
                 update_user_meta($user_id, 'tipo_identificacion', $customer['tipo_identificacion'] ?? '');
                 update_user_meta($user_id, 'billing_id', $customer['billing_id'] ?? '');
+                if (!empty($customer['billing_country'])) {
+                    update_user_meta($user_id, 'billing_country', $customer['billing_country']);
+                }
+                if (!empty($customer['billing_departamento'])) {
+                    update_user_meta($user_id, 'billing_departamento', $customer['billing_departamento']);
+                }
 
                 $imported++;
             }
@@ -2370,6 +2462,14 @@ class OdooFlow {
             $wc_customer->set_billing_address_2($odoo_customer['street2'] ?? '');
             $wc_customer->set_billing_city($odoo_customer['city'] ?? '');
             $wc_customer->set_billing_postcode($odoo_customer['zip'] ?? '');
+            if (!empty($odoo_customer['billing_country'])) {
+                $wc_customer->set_billing_country($odoo_customer['billing_country']);
+                $wc_customer->set_shipping_country($odoo_customer['billing_country']);
+            }
+            if (!empty($odoo_customer['billing_departamento'])) {
+                $wc_customer->set_billing_state($odoo_customer['billing_departamento']);
+                $wc_customer->set_shipping_state($odoo_customer['billing_departamento']);
+            }
             $wc_customer->set_billing_phone($odoo_customer['phone'] ?? $odoo_customer['mobile'] ?? '');
             $wc_customer->set_billing_email($odoo_customer['email']);
 
@@ -2389,6 +2489,12 @@ class OdooFlow {
             update_user_meta($user_id, '_odoo_customer_id', $odoo_customer['id']);
             update_user_meta($user_id, 'tipo_identificacion', $odoo_customer['tipo_identificacion'] ?? '');
             update_user_meta($user_id, 'billing_id', $odoo_customer['billing_id'] ?? '');
+            if (!empty($odoo_customer['billing_country'])) {
+                update_user_meta($user_id, 'billing_country', $odoo_customer['billing_country']);
+            }
+            if (!empty($odoo_customer['billing_departamento'])) {
+                update_user_meta($user_id, 'billing_departamento', $odoo_customer['billing_departamento']);
+            }
 
             return true;
         } catch (Exception $e) {
@@ -2408,7 +2514,16 @@ class OdooFlow {
             : fn( $k ) => $source->get_meta( $k );
 
         $raw_vat  = $get_meta( 'billing_id' );           // número CC/NIT
-        $id_code  = strtoupper( $get_meta( 'tipo_identificacion' ) ); // 13,22,31...
+        $id_code  = strtoupper( $get_meta( 'tipo_identificacion' ) ); // e.g. 13,31
+        $state    = $get_meta( 'billing_departamento' );
+        if ( ! $state ) {
+            $state = $get_meta( 'billing_state' );
+        }
+        $city     = $get_meta( 'billing_ciudad' );
+        if ( ! $city ) {
+            $city = $get_meta( 'billing_city' );
+        }
+        $country  = strtoupper( $get_meta( 'billing_country' ) );
 
         // --- 2. Normaliza y asigna VAT ------------------------------------
         if ( $raw_vat ) {
@@ -2417,16 +2532,20 @@ class OdooFlow {
 
         // --- 3. Busca el ID many2one del tipo de documento -----------------
         if ( $id_code ) {
-            static $cache = [];                          // evita consultas repetidas
-            if ( ! isset( $cache[ $id_code ] ) ) {
+            $map = $this->oflow_tipo_map();
+            $search_code = ctype_digit( $id_code ) && isset( $map[$id_code] )
+                ? $map[$id_code]
+                : strtolower( $id_code );
 
+            static $cache = []; // evita consultas repetidas
+            if ( ! isset( $cache[ $search_code ] ) ) {
                 $search_req = xmlrpc_encode_request( 'execute_kw', [
                     $database, $uid, $api_key,
                     'l10n_latam.identification.type', 'search',
-                    [[
-                        ['code', '=', $id_code],
-                        ['country_id.code', '=', 'CO']
-                    ]], 0, 1
+                    /* Los registros en l10n_co_edi no tienen country_id, por
+                       lo que se consulta solo por l10n_co_document_code */
+                    [[ ['l10n_co_document_code', '=', $search_code] ]],
+                    0, 1
                 ] );
 
                 $resp  = wp_remote_post( $object_ep, [
@@ -2436,12 +2555,50 @@ class OdooFlow {
                          ] );
                 $ids   = is_wp_error( $resp ) ? [] :
                          xmlrpc_decode( wp_remote_retrieve_body( $resp ) );
-                $cache[ $id_code ] = is_array( $ids ) && $ids ? $ids[0] : null;
+
+                if ( !is_array( $ids ) || ! $ids ) {
+                    $search_req = xmlrpc_encode_request( 'execute_kw', [
+                        $database, $uid, $api_key,
+                        'l10n_latam.identification.type', 'search',
+                        /* Fallback al campo generico 'code' */
+                        [[ ['code', '=', $search_code] ]],
+                        0, 1
+                    ] );
+
+                    $resp = wp_remote_post( $object_ep, [
+                        'body' => $search_req,
+                        'headers' => ['Content-Type'=>'text/xml'],
+                        'timeout'=>30,
+                        'sslverify'=>false
+                    ] );
+                    $ids = is_wp_error( $resp ) ? [] : xmlrpc_decode( wp_remote_retrieve_body( $resp ) );
+                }
+
+                $cache[ $search_code ] = is_array( $ids ) && $ids ? $ids[0] : null;
             }
 
-            if ( $cache[ $id_code ] ) {
-                $payload['l10n_latam_identification_type_id'] = $cache[ $id_code ];
+            if ( $cache[ $search_code ] ) {
+                $payload['l10n_latam_identification_type_id'] = $cache[ $search_code ];
             }
+        }
+
+        // --- 4. País, departamento y ciudad ------------------------------
+        if ( $country ) {
+            $cid = $this->lookup_country_id( $country, $database, $uid, $api_key, $object_ep );
+            if ( $cid ) {
+                $payload['country_id'] = $cid;
+            }
+        }
+
+        if ( $state ) {
+            $sid = $this->lookup_state_id( $state, $country ?: 'CO', $database, $uid, $api_key, $object_ep );
+            if ( $sid ) {
+                $payload['state_id'] = $sid;
+            }
+        }
+
+        if ( $city ) {
+            $payload['city'] = $city;
         }
 
         return $payload;
@@ -3083,9 +3240,121 @@ class OdooFlow {
      * Get country ID from Odoo
      */
     private function get_country_id($country_code) {
-        // Implementation to get country ID from Odoo
-        // This would need to be cached for performance
-        return 0; // Placeholder
+        $odoo_url = get_option('odooflow_odoo_url', '');
+        $username = get_option('odooflow_username', '');
+        $api_key  = get_option('odooflow_api_key', '');
+        $database = get_option('odooflow_database', '');
+
+        if (empty($odoo_url) || empty($username) || empty($api_key) || empty($database) || !$country_code) {
+            return 0;
+        }
+
+        $common_ep = rtrim($odoo_url, '/') . '/xmlrpc/2/common';
+        $object_ep = rtrim($odoo_url, '/') . '/xmlrpc/2/object';
+
+        $auth_request = xmlrpc_encode_request('authenticate', array(
+            $database,
+            $username,
+            $api_key,
+            array()
+        ));
+
+        $auth_response = wp_remote_post($common_ep, [
+            'body'    => $auth_request,
+            'headers' => ['Content-Type' => 'text/xml'],
+            'timeout' => 30,
+            'sslverify' => false
+        ]);
+
+        if (is_wp_error($auth_response)) {
+            return 0;
+        }
+
+        $uid = xmlrpc_decode(wp_remote_retrieve_body($auth_response));
+        if (!is_numeric($uid)) {
+            return 0;
+        }
+
+        return $this->lookup_country_id($country_code, $database, $uid, $api_key, $object_ep);
+    }
+
+    /**
+     * Lookup country ID by code using Odoo RPC
+     */
+    private function lookup_country_id($code, $database, $uid, $api_key, $object_ep) {
+        if (!$code) return 0;
+        $code = strtoupper($code);
+
+        static $cache = [];
+        if (!isset($cache[$code])) {
+            $req = xmlrpc_encode_request('execute_kw', [
+                $database, $uid, $api_key,
+                'res.country', 'search',
+                [[['code', '=', $code]]], 0, 1
+            ]);
+
+            $resp = wp_remote_post($object_ep, [
+                'body'    => $req,
+                'headers' => ['Content-Type' => 'text/xml'],
+                'timeout' => 30,
+                'sslverify' => false
+            ]);
+
+            $ids = is_wp_error($resp) ? [] : xmlrpc_decode(wp_remote_retrieve_body($resp));
+            $cache[$code] = is_array($ids) && $ids ? $ids[0] : 0;
+        }
+
+        return $cache[$code];
+    }
+
+    /**
+     * Lookup state ID by name and country
+     */
+    private function lookup_state_id($name, $country_code, $database, $uid, $api_key, $object_ep) {
+        if (!$name) return 0;
+        $key = strtoupper(($country_code ?: 'CO') . '|' . $name);
+
+        static $cache = [];
+        if (!isset($cache[$key])) {
+            $domain = [ ['name', 'ilike', $name] ];
+            if ($country_code) {
+                $domain[] = ['country_id.code', '=', strtoupper($country_code)];
+            }
+
+            $req = xmlrpc_encode_request('execute_kw', [
+                $database, $uid, $api_key,
+                'res.country.state', 'search',
+                [$domain], 0, 1
+            ]);
+
+            $resp = wp_remote_post($object_ep, [
+                'body'    => $req,
+                'headers' => ['Content-Type' => 'text/xml'],
+                'timeout' => 30,
+                'sslverify' => false
+            ]);
+
+            $ids = is_wp_error($resp) ? [] : xmlrpc_decode(wp_remote_retrieve_body($resp));
+            $cache[$key] = is_array($ids) && $ids ? $ids[0] : 0;
+        }
+
+        return $cache[$key];
+    }
+
+    /**
+     * DIAN numeric code to Odoo document code map
+     */
+    private function oflow_tipo_map() {
+        return array(
+            '11' => 'civil_registration',
+            '13' => 'national_citizen_id',
+            '12' => 'id_card',
+            '22' => 'foreign_resident_card',
+            '31' => 'rut',
+            '41' => 'passport',
+            '42' => 'foreign_id_card',
+            '48' => 'PPT',
+        );
     }
 
     /**
