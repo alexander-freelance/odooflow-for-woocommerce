@@ -2423,11 +2423,15 @@ class OdooFlow {
             static $cache = [];                          // evita consultas repetidas
             if ( ! isset( $cache[ $id_code ] ) ) {
 
+                // Convierte código DIAN numérico al código que espera Odoo
+                $map = [ '31' => 'rut', '13' => 'national_citizen_id' ];
+                $code = strtolower( $map[$id_code] ?? $id_code );
+
                 $search_req = xmlrpc_encode_request( 'execute_kw', [
                     $database, $uid, $api_key,
                     'l10n_latam.identification.type', 'search',
                     [[
-                        ['code', '=', $id_code],
+                        ['l10n_co_document_code', '=', $code],
                         ['country_id.code', '=', 'CO']
                     ]], 0, 1
                 ] );
