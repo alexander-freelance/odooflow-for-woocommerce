@@ -2418,6 +2418,22 @@ class OdooFlow {
             $payload['vat'] = preg_replace( '/[^A-Za-z0-9]/', '', $raw_vat );
         }
 
+        // --- 2.b Equivalencias de tipo -----------------------------------
+        if ( $id_code ) {
+            $map = [
+                'CEDULA DE CIUDADANIA' => '13',
+                'CEDULA DE CIUDADANÍA' => '13',
+                'CC'                    => '13',
+                'NIT'                   => '31',
+            ];
+            $norm = preg_replace( '/[^A-Z0-9]/', '', $id_code );
+            if ( isset( $map[ $id_code ] ) ) {
+                $id_code = $map[ $id_code ];
+            } elseif ( isset( $map[ $norm ] ) ) {
+                $id_code = $map[ $norm ];
+            }
+        }
+
         // --- 3. Busca el ID many2one del tipo de documento -----------------
         if ( $id_code ) {
             static $cache = [];                          // evita consultas repetidas
