@@ -2408,10 +2408,65 @@ class OdooFlow {
             : fn( $k ) => $source->get_meta( $k );
 
         $raw_vat  = $get_meta( 'billing_id' );           // número CC/NIT
-        $id_code  = strtoupper( $get_meta( 'tipo_identificacion' ) ); // 13,22,31...
+        $id_code  = trim( (string) $get_meta( 'tipo_identificacion' ) ); // 13,22,31... o "rut"/"NIT"
+        // Some plugins use custom meta keys for address fields
         $state    = $get_meta( 'billing_departamento' );
+        if ( ! $state ) {
+            $state = $get_meta( 'billing_state' );
+        }
         $city     = $get_meta( 'billing_ciudad' );
+        if ( ! $city ) {
+            $city = $get_meta( 'billing_city' );
+        }
         $country  = strtoupper( $get_meta( 'billing_country' ) );
+        if ( ! $country ) {
+            $country = 'CO'; // 🏳️ Valor por defecto
+        }
+
+        // Corrige nombres de departamento comunes
+        if ( $state ) {
+            $norm = strtoupper( preg_replace( '/[\s._-]+/', '', function_exists( 'remove_accents' ) ? remove_accents( $state ) : $state ) );
+            $state_aliases = [
+                'BOGOTA' => 'Bogotá D.C.',
+                'BOGOTADC' => 'Bogotá D.C.',
+                'DISTRITOCAPITAL' => 'Bogotá D.C.',
+                'AMA' => 'Amazonas', 'AMAZONAS' => 'Amazonas',
+                'ANT' => 'Antioquia', 'ANTIOQUIA' => 'Antioquia',
+                'ARA' => 'Arauca', 'ARAUCA' => 'Arauca',
+                'ATL' => 'Atlántico', 'ATLANTICO' => 'Atlántico',
+                'BOL' => 'Bolívar', 'BOLIVAR' => 'Bolívar',
+                'BOY' => 'Boyacá', 'BOYACA' => 'Boyacá',
+                'CAL' => 'Caldas', 'CALDAS' => 'Caldas',
+                'CAQ' => 'Caquetá', 'CAQUETA' => 'Caquetá',
+                'CAS' => 'Casanare', 'CASANARE' => 'Casanare',
+                'CAU' => 'Cauca', 'CAUCA' => 'Cauca',
+                'CES' => 'Cesar', 'CESAR' => 'Cesar',
+                'CHO' => 'Chocó', 'CHOCO' => 'Chocó',
+                'COR' => 'Córdoba', 'CORDOBA' => 'Córdoba',
+                'CUN' => 'Cundinamarca', 'CUNDINAMARCA' => 'Cundinamarca',
+                'GUA' => 'Guainía', 'GUAINIA' => 'Guainía',
+                'GUV' => 'Guaviare', 'GUAVIARE' => 'Guaviare',
+                'HUI' => 'Huila', 'HUILA' => 'Huila',
+                'LAG' => 'La Guajira', 'LA GUAJIRA' => 'La Guajira',
+                'MAG' => 'Magdalena', 'MAGDALENA' => 'Magdalena',
+                'MET' => 'Meta', 'META' => 'Meta',
+                'NAR' => 'Nariño', 'NARINO' => 'Nariño', 'NARIÑO' => 'Nariño',
+                'NSA' => 'Norte de Santander', 'NORTE DESANTANDER' => 'Norte de Santander', 'NORTE DE SANTANDER' => 'Norte de Santander',
+                'PUT' => 'Putumayo', 'PUTUMAYO' => 'Putumayo',
+                'QUI' => 'Quindío', 'QUINDIO' => 'Quindío',
+                'RIS' => 'Risaralda', 'RISARALDA' => 'Risaralda',
+                'SAP' => 'San Andrés', 'SAN ANDRES' => 'San Andrés', 'SAN ANDRÉS' => 'San Andrés',
+                'SNT' => 'Santander', 'SANTANDER' => 'Santander',
+                'SUC' => 'Sucre', 'SUCRE' => 'Sucre',
+                'TOL' => 'Tolima', 'TOLIMA' => 'Tolima',
+                'VAC' => 'Valle del Cauca', 'VALLE DEL CAUCA' => 'Valle del Cauca', 'VALLEDELCAUCA' => 'Valle del Cauca',
+                'VAU' => 'Vaupés', 'VAUPES' => 'Vaupés',
+                'VID' => 'Vichada', 'VICHADA' => 'Vichada',
+            ];
+            if ( isset( $state_aliases[ $norm ] ) ) {
+                $state = $state_aliases[ $norm ];
+            }
+        }
 
         // --- 2. Normaliza y asigna VAT ------------------------------------
         if ( $raw_vat ) {
@@ -2419,32 +2474,61 @@ class OdooFlow {
         }
 
         // --- 3. Busca el ID many2one del tipo de documento -----------------
-        if ( $id_code ) {
-            static $cache = [];                          // evita consultas repetidas
-            if ( ! isset( $cache[ $id_code ] ) ) {
+        static $map_dian_to_odoo = [
+            '31' => 'rut',
+            '13' => 'national_citizen_id',
+            '22' => 'foreign_id_card',
+            '41' => 'passport',
+        ];
 
-                $search_req = xmlrpc_encode_request( 'execute_kw', [
-                    $database, $uid, $api_key,
-                    'l10n_latam.identification.type', 'search',
-                    [[
-                        ['code', '=', $id_code],
-                        ['country_id.code', '=', 'CO']
-                    ]], 0, 1
-                ] );
+        static $alias_to_dian = [
+            'nit' => '31',
+            'rut' => '31',
+            'cc'  => '13',
+        ];
 
-                $resp  = wp_remote_post( $object_ep, [
-                            'body' => $search_req,
-                            'headers' => ['Content-Type'=>'text/xml'],
-                            'timeout'=>30, 'sslverify'=>false
-                         ] );
-                $ids   = is_wp_error( $resp ) ? [] :
-                         xmlrpc_decode( wp_remote_retrieve_body( $resp ) );
-                $cache[ $id_code ] = is_array( $ids ) && $ids ? $ids[0] : null;
+        // Normaliza y traduce el tipo de documento
+        $norm_code = strtolower( preg_replace( '/\s+/', '', $id_code ) );
+        $dian_code = null;
+
+        if ( isset( $alias_to_dian[ $norm_code ] ) ) {
+            $dian_code = $alias_to_dian[ $norm_code ];
+        } elseif ( isset( $map_dian_to_odoo[ $id_code ] ) ) {
+            $dian_code = $id_code;
+        } else {
+            $rev = array_flip( $map_dian_to_odoo );
+            if ( isset( $rev[ $norm_code ] ) ) {
+                $dian_code = $rev[ $norm_code ];
             }
+        }
 
-            if ( $cache[ $id_code ] ) {
-                $payload['l10n_latam_identification_type_id'] = $cache[ $id_code ];
-            }
+        if ( ! $dian_code ) {
+            $dian_code = '13';
+        }
+
+        static $cache = [];                          // evita consultas repetidas
+        if ( ! isset( $cache[ $dian_code ] ) ) {
+            // 🗄️  Buscamos el ID usando el campo 'l10n_co_document_code'
+            $search_req = xmlrpc_encode_request( 'execute_kw', [
+                $database, $uid, $api_key,
+                'l10n_latam.identification.type', 'search',
+                [[
+                    ['l10n_co_document_code', '=', $dian_code]
+                ]], 0, 1
+            ] );
+
+            $resp  = wp_remote_post( $object_ep, [
+                        'body' => $search_req,
+                        'headers' => ['Content-Type'=>'text/xml'],
+                        'timeout'=>30, 'sslverify'=>false
+                     ] );
+            $ids   = is_wp_error( $resp ) ? [] :
+                     xmlrpc_decode( wp_remote_retrieve_body( $resp ) );
+            $cache[ $dian_code ] = is_array( $ids ) && $ids ? $ids[0] : null;
+        }
+
+        if ( $cache[ $dian_code ] ) {
+            $payload['l10n_latam_identification_type_id'] = $cache[ $dian_code ];
         }
 
         // --- 4. País, departamento y ciudad ------------------------------
@@ -3177,14 +3261,16 @@ class OdooFlow {
      */
     private function lookup_state_id($name, $country_code, $database, $uid, $api_key, $object_ep) {
         if (!$name) return 0;
-        $key = strtoupper(($country_code ?: 'CO') . '|' . $name);
+        $country_code = $country_code ?: 'CO';
+        $key = strtoupper($country_code . '|' . $name);
 
         static $cache = [];
         if (!isset($cache[$key])) {
-            $domain = [ ['name', 'ilike', $name] ];
-            if ($country_code) {
-                $domain[] = ['country_id.code', '=', strtoupper($country_code)];
-            }
+            // Try by code first
+            $domain = [
+                ['country_id.code', '=', strtoupper($country_code)],
+                ['code', '=', strtoupper($name)]
+            ];
 
             $req = xmlrpc_encode_request('execute_kw', [
                 $database, $uid, $api_key,
@@ -3200,6 +3286,29 @@ class OdooFlow {
             ]);
 
             $ids = is_wp_error($resp) ? [] : xmlrpc_decode(wp_remote_retrieve_body($resp));
+
+            if (!is_array($ids) || !$ids) {
+                // Fallback: search by name
+                $domain = [
+                    ['country_id.code', '=', strtoupper($country_code)],
+                    ['name', 'ilike', $name]
+                ];
+                $req = xmlrpc_encode_request('execute_kw', [
+                    $database, $uid, $api_key,
+                    'res.country.state', 'search',
+                    [$domain], 0, 1
+                ]);
+
+                $resp = wp_remote_post($object_ep, [
+                    'body'    => $req,
+                    'headers' => ['Content-Type' => 'text/xml'],
+                    'timeout' => 30,
+                    'sslverify' => false
+                ]);
+
+                $ids = is_wp_error($resp) ? [] : xmlrpc_decode(wp_remote_retrieve_body($resp));
+            }
+
             $cache[$key] = is_array($ids) && $ids ? $ids[0] : 0;
         }
 
