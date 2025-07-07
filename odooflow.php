@@ -2420,30 +2420,37 @@ class OdooFlow {
 
         // --- 3. Busca el ID many2one del tipo de documento -----------------
         if ( $id_code ) {
-            static $cache = [];                          // evita consultas repetidas
-            if ( ! isset( $cache[ $id_code ] ) ) {
+            $map      = $this->oflow_tipo_map();
+            $doc_code = $map[ $id_code ] ?? '';
 
-                $search_req = xmlrpc_encode_request( 'execute_kw', [
-                    $database, $uid, $api_key,
-                    'l10n_latam.identification.type', 'search',
-                    [[
-                        ['code', '=', $id_code],
-                        ['country_id.code', '=', 'CO']
-                    ]], 0, 1
-                ] );
+            if ( ! $doc_code ) {
+                error_log( 'OdooFlow: Unknown DIAN code ' . $id_code );
+            } else {
+                static $cache = [];                      // evita consultas repetidas
+                if ( ! isset( $cache[ $doc_code ] ) ) {
 
-                $resp  = wp_remote_post( $object_ep, [
-                            'body' => $search_req,
-                            'headers' => ['Content-Type'=>'text/xml'],
-                            'timeout'=>30, 'sslverify'=>false
-                         ] );
-                $ids   = is_wp_error( $resp ) ? [] :
-                         xmlrpc_decode( wp_remote_retrieve_body( $resp ) );
-                $cache[ $id_code ] = is_array( $ids ) && $ids ? $ids[0] : null;
-            }
+                    $search_req = xmlrpc_encode_request( 'execute_kw', [
+                        $database, $uid, $api_key,
+                        'l10n_latam.identification.type', 'search',
+                        [[
+                            ['l10n_co_document_code', '=', $doc_code],
+                            ['country_id.code', '=', 'CO']
+                        ]], 0, 1
+                    ] );
 
-            if ( $cache[ $id_code ] ) {
-                $payload['l10n_latam_identification_type_id'] = $cache[ $id_code ];
+                    $resp  = wp_remote_post( $object_ep, [
+                                'body' => $search_req,
+                                'headers' => ['Content-Type'=>'text/xml'],
+                                'timeout'=>30, 'sslverify'=>false
+                             ] );
+                    $ids   = is_wp_error( $resp ) ? [] :
+                             xmlrpc_decode( wp_remote_retrieve_body( $resp ) );
+                    $cache[ $doc_code ] = is_array( $ids ) && $ids ? $ids[0] : null;
+                }
+
+                if ( $cache[ $doc_code ] ) {
+                    $payload['l10n_latam_identification_type_id'] = $cache[ $doc_code ];
+                }
             }
         }
 
@@ -3204,6 +3211,22 @@ class OdooFlow {
         }
 
         return $cache[$key];
+    }
+
+    /**
+     * Map DIAN numeric codes to Odoo document codes
+     */
+    private function oflow_tipo_map() {
+        return [
+            '11' => 'civil_registration',
+            '12' => 'identity_card',
+            '13' => 'national_citizen_id',
+            '22' => 'foreign_id',
+            '31' => 'rut',
+            '41' => 'passport',
+            '42' => 'foreign_id',
+            '48' => 'diplomatic_passport',
+        ];
     }
 
     /**
