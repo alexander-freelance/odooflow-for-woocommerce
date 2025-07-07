@@ -101,11 +101,11 @@ Responsible for enriching any **partner payload** (customer or order shipping co
 1. **VAT** (`vat`) from meta `billing_id`.
 2. **Tipo de identificación** (`l10n_latam_identification_type_id`):
 
-   * Translates meta `tipo_identificacion` (values `11, 12, 13, 22, 31, 41, 42, 48` …) → the textual code stored in Odoo (`rut`, `national_citizen_id`, etc.).
+   * Translates meta `tipo_identificacion` (values `11, 12, 13, 22, 31, 41, 42, 48` …) → the textual code stored in Odoo (`rut`, `national_citizen_id`, etc.). For compatibility with some plugins, code `13` also maps to `rut`.
    * Looks up the corresponding record in `l10n_latam.identification.type` via `l10n_co_document_code` and caches the ID.
 3. **Country** → `country_id` (calls `lookup_country_id()`)
-4. **State/Departamento** → `state_id` (calls `lookup_state_id()`)
-5. **City** → `city`
+4. **State/Departamento** → `state_id` (calls `lookup_state_id()`; reads meta `billing_departamento` or `billing_state`)
+5. **City** → `city`/`city_id` (calls `lookup_city_id()`; reads meta `billing_ciudad` or `billing_city`)
 
 > **Warning**  If country = Colombia but the tipo de identificación lookup fails (e.g. bad code), Odoo will accept the partner but localised EDIs might fail.  Always keep the map in `oflow_tipo_map()` in sync with DIAN codes.
 
@@ -119,6 +119,8 @@ Responsible for enriching any **partner payload** (customer or order shipping co
 | `get_currency_id()`   | ⚠ *TODO*      | Resolve ISO 4217 → `res.currency`     |
 | `lookup_country_id()` | ✔ implemented | Cached by ISO alpha‑2 code            |
 | `lookup_state_id()`   | ✔ implemented | `ilike` search within country         |
+| `lookup_city_id()`    | ✔ implemented | `res.city` lookup by state
+| `oflow_tipo_map()`    | ✔ implemented | DIAN numeric → Odoo code map |
 
 Add implementation notes here when you finish a placeholder.
 
@@ -145,4 +147,4 @@ Add implementation notes here when you finish a placeholder.
 
 ---
 
-> *Last updated: 2025‑07‑06.*  Add your initials when you touch this file.
+> *Last updated: 2025‑07‑07 (CDX).*  Add your initials when you touch this file.
