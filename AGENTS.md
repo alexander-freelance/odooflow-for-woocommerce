@@ -103,6 +103,17 @@ Responsible for enriching any **partner payload** (customer or order shipping co
 
    * Translates meta `tipo_identificacion` (values `11, 12, 13, 22, 31, 41, 42, 48` …) → the textual code stored in Odoo (`rut`, `national_citizen_id`, etc.).
    * Looks up the corresponding record in `l10n_latam.identification.type` via `l10n_co_document_code` and caches the ID.
+
+   | DIAN code | Odoo code            |
+   | --------- | -------------------- |
+   | `11`      | `civil_registration` |
+   | `12`      | `identity_card`      |
+   | `13`      | `national_citizen_id`|
+   | `22`      | `foreign_id_card`    |
+   | `31`      | `rut`                |
+   | `41`      | `passport`           |
+   | `42`      | `diplomatic_passport`|
+   | `48`      | `other`              |
 3. **Country** → `country_id` (calls `lookup_country_id()`)
 4. **State/Departamento** → `state_id` (calls `lookup_state_id()`)
 5. **City** → `city`
@@ -145,4 +156,4 @@ Add implementation notes here when you finish a placeholder.
 
 ---
 
-> *Last updated: 2025‑07‑06.*  Add your initials when you touch this file.
+> *Last updated: 2025‑07‑07.*  Add your initials when you touch this file. [Codex]

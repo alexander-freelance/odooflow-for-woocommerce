@@ -2398,6 +2398,23 @@ class OdooFlow {
     }
 
     /* ==========  HELPER COLOMBIA DIAN  ========== */
+
+    /**
+     * Map DIAN numeric codes → Odoo string codes.
+     */
+    private function oflow_tipo_map(): array {
+        return [
+            '11' => 'civil_registration',  // RC → civil_registration
+            '12' => 'identity_card',       // TI → identity_card
+            '13' => 'national_citizen_id', // CC → national_citizen_id
+            '22' => 'foreign_id_card',     // CE → foreign_id_card
+            '31' => 'rut',                // NIT → rut
+            '41' => 'passport',            // PS → passport
+            '42' => 'diplomatic_passport', // DP → diplomatic_passport
+            '48' => 'other',               // Others
+        ];
+    }
+
     private function oflow_add_col_fields( $source, array $payload,
                                            string $database, int $uid,
                                            string $api_key, string $object_ep ): array {
@@ -2420,6 +2437,13 @@ class OdooFlow {
 
         // --- 3. Busca el ID many2one del tipo de documento -----------------
         if ( $id_code ) {
+            $tipo_map = $this->oflow_tipo_map();
+            $search_val = $tipo_map[$id_code] ?? '';
+            if ( ! $search_val ) {
+                error_log('OdooFlow: Unknown DIAN code ' . $id_code);
+                return $payload;
+            }
+
             static $cache = [];                          // evita consultas repetidas
             if ( ! isset( $cache[ $id_code ] ) ) {
 
@@ -2427,7 +2451,7 @@ class OdooFlow {
                     $database, $uid, $api_key,
                     'l10n_latam.identification.type', 'search',
                     [[
-                        ['code', '=', $id_code],
+                        ['l10n_co_document_code', '=', $search_val],
                         ['country_id.code', '=', 'CO']
                     ]], 0, 1
                 ] );
