@@ -2408,7 +2408,7 @@ class OdooFlow {
             : fn( $k ) => $source->get_meta( $k );
 
         $raw_vat  = $get_meta( 'billing_id' );           // número CC/NIT
-        $id_code  = strtoupper( $get_meta( 'tipo_identificacion' ) ); // 13,22,31...
+        $id_code  = trim( (string) $get_meta( 'tipo_identificacion' ) ); // 13,22,31... o 'rut'
         $state    = $get_meta( 'billing_departamento' );
         $city     = $get_meta( 'billing_ciudad' );
         $country  = strtoupper( $get_meta( 'billing_country' ) );
@@ -2421,14 +2421,23 @@ class OdooFlow {
         // --- 3. Busca el ID many2one del tipo de documento -----------------
         if ( $id_code ) {
             static $cache = [];                          // evita consultas repetidas
-            if ( ! isset( $cache[ $id_code ] ) ) {
+
+            /* ➕  Mapeamos códigos DIAN numéricos al código Odoo */
+            $map = [
+                '31' => 'rut',
+                '13' => 'national_citizen_id',
+                '22' => 'foreign_id_card',
+                '41' => 'passport',
+            ];
+            $doc_code = strtolower( $map[ $id_code ] ?? $id_code );
+
+            if ( ! isset( $cache[ $doc_code ] ) ) {
 
                 $search_req = xmlrpc_encode_request( 'execute_kw', [
                     $database, $uid, $api_key,
                     'l10n_latam.identification.type', 'search',
                     [[
-                        ['code', '=', $id_code],
-                        ['country_id.code', '=', 'CO']
+                        ['l10n_co_document_code', '=', $doc_code]
                     ]], 0, 1
                 ] );
 
@@ -2439,11 +2448,11 @@ class OdooFlow {
                          ] );
                 $ids   = is_wp_error( $resp ) ? [] :
                          xmlrpc_decode( wp_remote_retrieve_body( $resp ) );
-                $cache[ $id_code ] = is_array( $ids ) && $ids ? $ids[0] : null;
+                $cache[ $doc_code ] = is_array( $ids ) && $ids ? $ids[0] : null;
             }
 
-            if ( $cache[ $id_code ] ) {
-                $payload['l10n_latam_identification_type_id'] = $cache[ $id_code ];
+            if ( $cache[ $doc_code ] ) {
+                $payload['l10n_latam_identification_type_id'] = $cache[ $doc_code ];
             }
         }
 
