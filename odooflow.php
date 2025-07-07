@@ -2408,10 +2408,11 @@ class OdooFlow {
             : fn( $k ) => $source->get_meta( $k );
 
         $raw_vat  = $get_meta( 'billing_id' );           // número CC/NIT
-        $id_code  = strtoupper( $get_meta( 'tipo_identificacion' ) ); // 13,22,31...
+        $id_code  = trim( (string) $get_meta( 'tipo_identificacion' ) ); // 13,22,31... o "rut"/"NIT"
         $state    = $get_meta( 'billing_departamento' );
+        $state    = preg_replace( '/^CO-/', '', strtoupper( trim( (string) $state ) ) );
         $city     = $get_meta( 'billing_ciudad' );
-        $country  = strtoupper( $get_meta( 'billing_country' ) );
+        $country  = 'CO';                               // siempre Colombia
 
         // --- 2. Normaliza y asigna VAT ------------------------------------
         if ( $raw_vat ) {
@@ -2419,44 +2420,74 @@ class OdooFlow {
         }
 
         // --- 3. Busca el ID many2one del tipo de documento -----------------
-        if ( $id_code ) {
-            static $cache = [];                          // evita consultas repetidas
-            if ( ! isset( $cache[ $id_code ] ) ) {
+        static $map_dian_to_odoo = [
+            '31' => 'rut',
+            '13' => 'national_citizen_id',
+            '22' => 'foreign_id_card',
+            '41' => 'passport',
+        ];
 
-                $search_req = xmlrpc_encode_request( 'execute_kw', [
-                    $database, $uid, $api_key,
-                    'l10n_latam.identification.type', 'search',
-                    [[
-                        ['code', '=', $id_code],
-                        ['country_id.code', '=', 'CO']
-                    ]], 0, 1
-                ] );
+        static $alias_to_dian = [
+            'nit' => '31',
+            'rut' => '31',
+            'cc'  => '13',
+        ];
 
-                $resp  = wp_remote_post( $object_ep, [
-                            'body' => $search_req,
-                            'headers' => ['Content-Type'=>'text/xml'],
-                            'timeout'=>30, 'sslverify'=>false
-                         ] );
-                $ids   = is_wp_error( $resp ) ? [] :
-                         xmlrpc_decode( wp_remote_retrieve_body( $resp ) );
-                $cache[ $id_code ] = is_array( $ids ) && $ids ? $ids[0] : null;
+        // Normaliza y traduce el tipo de documento
+        $norm_code  = strtolower( preg_replace( '/\s+/', '', (string) $id_code ) );
+        $digits     = preg_replace( '/\D/', '', $norm_code );
+        $dian_code  = null;
+
+        if ( $digits ) {
+            $dian_code = $digits;
+        } elseif ( isset( $alias_to_dian[ $norm_code ] ) ) {
+            $dian_code = $alias_to_dian[ $norm_code ];
+        } elseif ( isset( $map_dian_to_odoo[ $norm_code ] ) ) {
+            $dian_code = $norm_code;
+        } else {
+            $rev = array_flip( $map_dian_to_odoo );
+            if ( isset( $rev[ $norm_code ] ) ) {
+                $dian_code = $rev[ $norm_code ];
             }
+        }
 
-            if ( $cache[ $id_code ] ) {
-                $payload['l10n_latam_identification_type_id'] = $cache[ $id_code ];
-            }
+        if ( ! $dian_code ) {
+            $dian_code = '13';
+        }
+
+        static $cache = [];                          // evita consultas repetidas
+        if ( ! isset( $cache[ $dian_code ] ) ) {
+            // 🗄️  Buscamos el ID usando el campo 'l10n_co_document_code'
+            $search_req = xmlrpc_encode_request( 'execute_kw', [
+                $database, $uid, $api_key,
+                'l10n_latam.identification.type', 'search',
+                [[
+                    ['l10n_co_document_code', '=', $dian_code]
+                ]], 0, 1
+            ] );
+
+            $resp  = wp_remote_post( $object_ep, [
+                        'body' => $search_req,
+                        'headers' => ['Content-Type'=>'text/xml'],
+                        'timeout'=>30, 'sslverify'=>false
+                     ] );
+            $ids   = is_wp_error( $resp ) ? [] :
+                     xmlrpc_decode( wp_remote_retrieve_body( $resp ) );
+            $cache[ $dian_code ] = is_array( $ids ) && $ids ? $ids[0] : null;
+        }
+
+        if ( $cache[ $dian_code ] ) {
+            $payload['l10n_latam_identification_type_id'] = $cache[ $dian_code ];
         }
 
         // --- 4. País, departamento y ciudad ------------------------------
-        if ( $country ) {
-            $cid = $this->lookup_country_id( $country, $database, $uid, $api_key, $object_ep );
-            if ( $cid ) {
-                $payload['country_id'] = $cid;
-            }
+        $cid = $this->lookup_country_id( 'CO', $database, $uid, $api_key, $object_ep );
+        if ( $cid ) {
+            $payload['country_id'] = $cid;
         }
 
         if ( $state ) {
-            $sid = $this->lookup_state_id( $state, $country ?: 'CO', $database, $uid, $api_key, $object_ep );
+            $sid = $this->lookup_state_id( $state, 'CO', $database, $uid, $api_key, $object_ep );
             if ( $sid ) {
                 $payload['state_id'] = $sid;
             }
@@ -3200,6 +3231,28 @@ class OdooFlow {
             ]);
 
             $ids = is_wp_error($resp) ? [] : xmlrpc_decode(wp_remote_retrieve_body($resp));
+
+            // Retry by code if not found
+            if (!is_array($ids) || !$ids) {
+                $req = xmlrpc_encode_request('execute_kw', [
+                    $database, $uid, $api_key,
+                    'res.country.state', 'search',
+                    [[
+                        ['code', '=', strtoupper($name)],
+                        ['country_id.code', '=', strtoupper($country_code)]
+                    ]], 0, 1
+                ]);
+
+                $resp = wp_remote_post($object_ep, [
+                    'body'    => $req,
+                    'headers' => ['Content-Type' => 'text/xml'],
+                    'timeout' => 30,
+                    'sslverify' => false
+                ]);
+
+                $ids = is_wp_error($resp) ? [] : xmlrpc_decode(wp_remote_retrieve_body($resp));
+            }
+
             $cache[$key] = is_array($ids) && $ids ? $ids[0] : 0;
         }
 
