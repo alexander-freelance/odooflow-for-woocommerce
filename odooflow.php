@@ -2408,7 +2408,7 @@ class OdooFlow {
             : fn( $k ) => $source->get_meta( $k );
 
         $raw_vat  = $get_meta( 'billing_id' );           // número CC/NIT
-        $id_code  = strtoupper( $get_meta( 'tipo_identificacion' ) ); // 13,22,31...
+        $id_code  = trim( (string) $get_meta( 'tipo_identificacion' ) ); // 13,22,31... o "rut"
         $state    = $get_meta( 'billing_departamento' );
         $city     = $get_meta( 'billing_ciudad' );
         $country  = strtoupper( $get_meta( 'billing_country' ) );
@@ -2419,32 +2419,53 @@ class OdooFlow {
         }
 
         // --- 3. Busca el ID many2one del tipo de documento -----------------
-        if ( $id_code ) {
-            static $cache = [];                          // evita consultas repetidas
-            if ( ! isset( $cache[ $id_code ] ) ) {
+        static $map_dian_to_odoo = [
+            '31' => 'rut',
+            '13' => 'national_citizen_id',
+            '22' => 'foreign_id_card',
+            '41' => 'passport',
+        ];
 
-                $search_req = xmlrpc_encode_request( 'execute_kw', [
-                    $database, $uid, $api_key,
-                    'l10n_latam.identification.type', 'search',
-                    [[
-                        ['code', '=', $id_code],
-                        ['country_id.code', '=', 'CO']
-                    ]], 0, 1
-                ] );
-
-                $resp  = wp_remote_post( $object_ep, [
-                            'body' => $search_req,
-                            'headers' => ['Content-Type'=>'text/xml'],
-                            'timeout'=>30, 'sslverify'=>false
-                         ] );
-                $ids   = is_wp_error( $resp ) ? [] :
-                         xmlrpc_decode( wp_remote_retrieve_body( $resp ) );
-                $cache[ $id_code ] = is_array( $ids ) && $ids ? $ids[0] : null;
+        // Normaliza a código DIAN y código Odoo, valor por defecto CC (13)
+        $odoo_code = strtolower( $id_code );
+        $dian_code = null;
+        if ( isset( $map_dian_to_odoo[ $id_code ] ) ) {
+            $odoo_code = $map_dian_to_odoo[ $id_code ];
+            $dian_code = $id_code;
+        } else {
+            $rev = array_flip( $map_dian_to_odoo );
+            if ( isset( $rev[ $odoo_code ] ) ) {
+                $dian_code = $rev[ $odoo_code ];
             }
+        }
+        if ( ! $dian_code ) {
+            $dian_code = '13';
+            $odoo_code = 'national_citizen_id';
+        }
 
-            if ( $cache[ $id_code ] ) {
-                $payload['l10n_latam_identification_type_id'] = $cache[ $id_code ];
-            }
+        static $cache = [];                          // evita consultas repetidas
+        if ( ! isset( $cache[ $dian_code ] ) ) {
+            // 🗄️  Buscamos el ID usando el campo 'l10n_co_document_code'
+            $search_req = xmlrpc_encode_request( 'execute_kw', [
+                $database, $uid, $api_key,
+                'l10n_latam.identification.type', 'search',
+                [[
+                    ['l10n_co_document_code', '=', $dian_code]
+                ]], 0, 1
+            ] );
+
+            $resp  = wp_remote_post( $object_ep, [
+                        'body' => $search_req,
+                        'headers' => ['Content-Type'=>'text/xml'],
+                        'timeout'=>30, 'sslverify'=>false
+                     ] );
+            $ids   = is_wp_error( $resp ) ? [] :
+                     xmlrpc_decode( wp_remote_retrieve_body( $resp ) );
+            $cache[ $dian_code ] = is_array( $ids ) && $ids ? $ids[0] : null;
+        }
+
+        if ( $cache[ $dian_code ] ) {
+            $payload['l10n_latam_identification_type_id'] = $cache[ $dian_code ];
         }
 
         // --- 4. País, departamento y ciudad ------------------------------
