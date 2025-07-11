@@ -59,9 +59,9 @@
 The inverse mapping lives in `ajax_import_odoo_customers()` and `update_wc_customer()`.  It updates or creates a WC *customer* role user and stores:
 
 * `_odoo_customer_id`   (bridge key)
-* `tipo_identificacion` meta   ← resolved from Odoo → WC numeric code (via reverse map)
+* `tipo_identificacion` meta   ← resolved from Odoo → WC numeric code (via `oflow_tipo_reverse_map()`)
 * `billing_id`              ← from `vat`
-* `billing_country`, `billing_departamento` meta for DIAN helper
+* `billing_country`, `billing_departamento`, `billing_ciudad` meta for DIAN helper
 
 ---
 
@@ -120,6 +120,8 @@ Responsible for enriching any **partner payload** (customer or order shipping co
 | `lookup_country_id()` | ✔ implemented | Cached by ISO alpha‑2 code            |
 | `lookup_state_id()`   | ✔ implemented | `ilike` search within country         |
 
+| `oflow_tipo_map()`    | ✔ implemented | DIAN numeric → Odoo textual code |
+| `oflow_tipo_reverse_map()` | ✔ implemented | Reverse lookup for imports |
 Add implementation notes here when you finish a placeholder.
 
 ---
