@@ -61,7 +61,7 @@ The inverse mapping lives in `ajax_import_odoo_customers()` and `update_wc_custo
 * `_odoo_customer_id`   (bridge key)
 * `tipo_identificacion` meta   ← resolved from Odoo → WC numeric code (via reverse map)
 * `billing_id`              ← from `vat`
-* `billing_country`, `billing_departamento` meta for DIAN helper
+* `billing_country`, `billing_departamento`, `billing_ciudad` meta for DIAN helper
 
 ---
 
