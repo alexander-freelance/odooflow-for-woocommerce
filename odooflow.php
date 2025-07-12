@@ -1883,49 +1883,51 @@ class OdooFlow {
     /**
      * Export a single product to Odoo
      */
-    private function export_product_to_odoo($product, $selected_fields) {
-        $odoo_url = get_option('odooflow_odoo_url', '');
-        $username = get_option('odooflow_username', '');
-        $api_key = get_option('odooflow_api_key', '');
-        $database = get_option('odooflow_database', '');
+    private function export_product_to_odoo($product, $selected_fields, $database = null, $uid = null, $api_key = null, $odoo_url = null) {
+        $odoo_url = $odoo_url !== null ? $odoo_url : get_option('odooflow_odoo_url', '');
+        $username  = get_option('odooflow_username', '');
+        $api_key   = $api_key !== null ? $api_key : get_option('odooflow_api_key', '');
+        $database  = $database !== null ? $database : get_option('odooflow_database', '');
 
         if (empty($odoo_url) || empty($username) || empty($api_key) || empty($database)) {
             return new WP_Error('missing_credentials', __('Please configure all Odoo connection settings first.', 'odooflow'));
         }
 
-        // First authenticate to get the user ID
-        $auth_request = xmlrpc_encode_request('authenticate', array(
-            $database,
-            $username,
-            $api_key,
-            array()
-        ));
+        if ($uid === null) {
+            // Authenticate only if no UID provided
+            $auth_request = xmlrpc_encode_request('authenticate', [
+                $database,
+                $username,
+                $api_key,
+                []
+            ]);
 
-        $auth_response = wp_remote_post(rtrim($odoo_url, '/') . '/xmlrpc/2/common', [
-            'body' => $auth_request,
-            'headers' => ['Content-Type' => 'text/xml'],
-            'timeout' => 30,
-            'sslverify' => false
-        ]);
+            $auth_response = wp_remote_post(rtrim($odoo_url, '/') . '/xmlrpc/2/common', [
+                'body'      => $auth_request,
+                'headers'   => ['Content-Type' => 'text/xml'],
+                'timeout'   => 30,
+                'sslverify' => false,
+            ]);
 
-        if (is_wp_error($auth_response)) {
-            return new WP_Error('connection_error', __('Error connecting to Odoo server.', 'odooflow'));
-        }
+            if (is_wp_error($auth_response)) {
+                return new WP_Error('connection_error', __('Error connecting to Odoo server.', 'odooflow'));
+            }
 
-        $auth_body = wp_remote_retrieve_body($auth_response);
-        $auth_xml = simplexml_load_string($auth_body);
-        if ($auth_xml === false) {
-            return new WP_Error('parse_error', __('Error parsing authentication response.', 'odooflow'));
-        }
+            $auth_body = wp_remote_retrieve_body($auth_response);
+            $auth_xml  = simplexml_load_string($auth_body);
+            if ($auth_xml === false) {
+                return new WP_Error('parse_error', __('Error parsing authentication response.', 'odooflow'));
+            }
 
-        $auth_data = json_decode(json_encode($auth_xml), true);
-        if (isset($auth_data['fault'])) {
-            return new WP_Error('auth_failed', __('Authentication failed. Please check your credentials.', 'odooflow'));
-        }
+            $auth_data = json_decode(json_encode($auth_xml), true);
+            if (isset($auth_data['fault'])) {
+                return new WP_Error('auth_failed', __('Authentication failed. Please check your credentials.', 'odooflow'));
+            }
 
-        $uid = $auth_data['params']['param']['value']['int'] ?? null;
-        if (!$uid) {
-            return new WP_Error('no_uid', __('Could not get user ID from authentication response.', 'odooflow'));
+            $uid = $auth_data['params']['param']['value']['int'] ?? null;
+            if (!$uid) {
+                return new WP_Error('no_uid', __('Could not get user ID from authentication response.', 'odooflow'));
+            }
         }
 
         // Prepare product data for Odoo
@@ -2750,7 +2752,7 @@ class OdooFlow {
 
             // Get order data
             error_log('OdooFlow: Preparing order data');
-            $order_data = $this->prepare_order_data($order, $database, $uid, $api_key);
+            $order_data = $this->prepare_order_data($order, $database, $uid, $api_key, $odoo_url);
             error_log('OdooFlow: Order data prepared: ' . print_r($order_data, true));
             
             // Check if order exists in Odoo
@@ -2836,7 +2838,7 @@ class OdooFlow {
     /**
      * Prepare order data for Odoo
      */
-    private function prepare_order_data($order, $database, $uid, $api_key) {
+    private function prepare_order_data($order, $database, $uid, $api_key, $odoo_url) {
         error_log('OdooFlow: Preparing order data for order #' . $order->get_id());
         
         $order_status = $order->get_status();
@@ -2856,7 +2858,7 @@ class OdooFlow {
 
         // Prepare order lines
         error_log('OdooFlow: Preparing order lines');
-        $order_lines = $this->prepare_order_lines($order);
+        $order_lines = $this->prepare_order_lines($order, $database, $uid, $api_key, $odoo_url);
         error_log('OdooFlow: Order lines prepared: ' . print_r($order_lines, true));
         
         $order_data = array(
@@ -2925,12 +2927,15 @@ class OdooFlow {
     /**
      * Prepare order line items for Odoo
      */
-    private function prepare_order_lines($order) {
+    private function prepare_order_lines($order, $database, $uid, $api_key, $odoo_url) {
         $lines = array();
-        
+
         foreach ($order->get_items() as $item) {
-            $product_id = $this->get_or_create_odoo_product($item->get_product());
-            if (!$product_id) continue;
+            $product_id = $this->get_or_create_odoo_product($item->get_product(), $database, $uid, $api_key, $odoo_url);
+            if (is_wp_error($product_id)) {
+                error_log('OdooFlow: Failed to get/create product - ' . $product_id->get_error_message());
+                continue;
+            }
 
             $line = array(
                 'product_id' => $product_id,
@@ -2964,39 +2969,85 @@ class OdooFlow {
     /**
      * Get or create Odoo product
      */
-    private function get_or_create_odoo_product($product) {
-        if (!$product) return false;
-
-        $odoo_product_id = get_post_meta($product->get_id(), '_odoo_product_id', true);
-        if ($odoo_product_id) return $odoo_product_id;
-
-        // Create product in Odoo if it doesn't exist
-        $product_data = array(
-            'name' => $product->get_name(),
-            'default_code' => $product->get_sku(),
-            'list_price' => $product->get_regular_price(),
-            'type' => 'product',
-            'sale_ok' => true
-        );
-
-        // Create product in Odoo
-        $result = $this->create_odoo_product($product_data);
-        if (!is_wp_error($result)) {
-            update_post_meta($product->get_id(), '_odoo_product_id', $result);
-            return $result;
+    private function get_or_create_odoo_product($product, $database, $uid, $api_key, $odoo_url) {
+        if (!$product) {
+            return new WP_Error('invalid_product', __('Invalid product.', 'odooflow'));
         }
 
-        return false;
+        $odoo_product_id = get_post_meta($product->get_id(), '_odoo_product_id', true);
+        if ($odoo_product_id) {
+            return (int) $odoo_product_id;
+        }
+
+        $result = $this->export_product_to_odoo($product, array('list_price'), $database, $uid, $api_key, $odoo_url);
+
+        if (!is_wp_error($result) && isset($result['odoo_id'])) {
+            update_post_meta($product->get_id(), '_odoo_product_id', $result['odoo_id']);
+            return (int) $result['odoo_id'];
+        }
+
+        return is_wp_error($result) ? $result : new WP_Error('product_sync_failed', __('Failed to sync product.', 'odooflow'));
     }
 
     /**
      * Create product in Odoo
      */
-    private function create_odoo_product($product_data) {
-        // Implementation for creating product in Odoo
-        // This would use the XML-RPC API to create a product
-        // Return the Odoo product ID or WP_Error
-        return 0; // Placeholder
+    private function create_odoo_product($product_data, $database, $uid, $api_key, $object_ep) {
+
+        // Check if product already exists by SKU
+        if (!empty($product_data['default_code'])) {
+            $search_request = xmlrpc_encode_request('execute_kw', [
+                $database,
+                $uid,
+                $api_key,
+                'product.template',
+                'search_read',
+                [[['default_code', '=', $product_data['default_code']]]],
+                ['fields' => ['id'], 'limit' => 1],
+            ]);
+
+            $search_response = wp_remote_post($object_ep, [
+                'body'      => $search_request,
+                'headers'   => ['Content-Type' => 'text/xml'],
+                'timeout'   => 30,
+                'sslverify' => false,
+            ]);
+
+            $search_result = is_wp_error($search_response)
+                ? []
+                : xmlrpc_decode(wp_remote_retrieve_body($search_response));
+
+            if (is_array($search_result) && !empty($search_result)) {
+                return (int) $search_result[0]['id'];
+            }
+        }
+
+        $create_request = xmlrpc_encode_request('execute_kw', [
+            $database,
+            $uid,
+            $api_key,
+            'product.template',
+            'create',
+            [$product_data],
+        ]);
+
+        $create_response = wp_remote_post($object_ep, [
+            'body'      => $create_request,
+            'headers'   => ['Content-Type' => 'text/xml'],
+            'timeout'   => 30,
+            'sslverify' => false,
+        ]);
+
+        if (is_wp_error($create_response)) {
+            return new WP_Error('create_error', __('Error creating product in Odoo.', 'odooflow'));
+        }
+
+        $result = xmlrpc_decode(wp_remote_retrieve_body($create_response));
+        if (!is_numeric($result)) {
+            return new WP_Error('create_failed', __('Failed to create product in Odoo.', 'odooflow'));
+        }
+
+        return (int) $result;
     }
 
     /**
@@ -3006,10 +3057,41 @@ class OdooFlow {
         $customer_id = $order->get_customer_id();
         if ($customer_id) {
             $odoo_customer_id = get_user_meta($customer_id, '_odoo_customer_id', true);
-            if ($odoo_customer_id) return $odoo_customer_id;
+            if ($odoo_customer_id) {
+                return (int) $odoo_customer_id;
+            }
         }
 
         $object_endpoint = rtrim(get_option('odooflow_odoo_url', ''), '/') . '/xmlrpc/2/object';
+
+        // Search for existing customer by email
+        $search_request = xmlrpc_encode_request('execute_kw', [
+            $database,
+            $uid,
+            $api_key,
+            'res.partner',
+            'search_read',
+            [[['email', '=', $order->get_billing_email()]]],
+            ['fields' => ['id'], 'limit' => 1],
+        ]);
+
+        $search_response = wp_remote_post($object_endpoint, [
+            'body'      => $search_request,
+            'headers'   => ['Content-Type' => 'text/xml'],
+            'timeout'   => 30,
+            'sslverify' => false,
+        ]);
+
+        if (!is_wp_error($search_response)) {
+            $existing = xmlrpc_decode(wp_remote_retrieve_body($search_response));
+            if (is_array($existing) && !empty($existing)) {
+                $odoo_id = (int) $existing[0]['id'];
+                if ($customer_id) {
+                    update_user_meta($customer_id, '_odoo_customer_id', $odoo_id);
+                }
+                return $odoo_id;
+            }
+        }
 
         // Prepare geographical information
         $country_id = $this->get_country_id(
@@ -3058,7 +3140,7 @@ class OdooFlow {
         );
 
         // Create customer in Odoo
-        $result = $this->create_odoo_customer($customer_data);
+        $result = $this->create_odoo_customer($customer_data, $database, $uid, $api_key, $object_endpoint);
         if (!is_wp_error($result) && $customer_id) {
             update_user_meta($customer_id, '_odoo_customer_id', $result);
             $tipo_val = $order->get_meta('tipo_identificacion');
@@ -3077,11 +3159,34 @@ class OdooFlow {
     /**
      * Create customer in Odoo
      */
-    private function create_odoo_customer($customer_data) {
-        // Implementation for creating customer in Odoo
-        // This would use the XML-RPC API to create a customer
-        // Return the Odoo customer ID or WP_Error
-        return 0; // Placeholder
+    private function create_odoo_customer($customer_data, $database, $uid, $api_key, $object_ep) {
+
+        $create_request = xmlrpc_encode_request('execute_kw', [
+            $database,
+            $uid,
+            $api_key,
+            'res.partner',
+            'create',
+            [$customer_data],
+        ]);
+
+        $create_response = wp_remote_post($object_ep, [
+            'body'      => $create_request,
+            'headers'   => ['Content-Type' => 'text/xml'],
+            'timeout'   => 30,
+            'sslverify' => false,
+        ]);
+
+        if (is_wp_error($create_response)) {
+            return new WP_Error('create_error', __('Error creating customer in Odoo.', 'odooflow'));
+        }
+
+        $result = xmlrpc_decode(wp_remote_retrieve_body($create_response));
+        if (!is_numeric($result)) {
+            return new WP_Error('create_failed', __('Failed to create customer in Odoo.', 'odooflow'));
+        }
+
+        return (int) $result;
     }
 
     /**
