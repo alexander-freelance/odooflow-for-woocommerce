@@ -1,0 +1,147 @@
+# AGENTS.md for Codex Agent
+
+Este archivo `AGENTS.md` proporciona a OpenAI Codex instrucciones precisas para la integración **WooCommerce ↔ Odoo 18 Enterprise**, con énfasis en la **sincronización de pedidos** vía XML-RPC, reutilizando la lógica existente de clientes y productos.
+
+---
+
+## 1. Descripción General
+
+- **Objetivo**: Sincronizar clientes, productos y pedidos de WooCommerce a Odoo 18 Enterprise autohospedado.
+- **Alcance Actual**:
+  - La **sincronización individual** de clientes y productos ya funciona correctamente (reutilice `get_or_create_odoo_customer()` y `get_or_create_odoo_product()`).
+  - **Pedidos**: implementar flujo que invoque esas funciones para cada línea, y luego llame a `sale.order.create` vía XML-RPC.
+- **Problema Actual**:
+  - Al hacer clic en “Sync to Odoo” en la interfaz de pedidos, WooCommerce devuelve una pantalla en blanco con error crítico y no se crea nada en Odoo.
+
+## 2. Comunicación via XML-RPC
+
+El plugin no envía JSON: **construye y envía solicitudes XML-RPC** a los endpoints:
+
+- `/xmlrpc/2/common` → `authenticate(database, username, api_key, {})` → devuelve `uid`.
+- `/xmlrpc/2/object` → `execute_kw(database, uid, api_key, model, method, [args], {kwargs})`.
+
+Codex debe generar correctamente los parámetros para `execute_kw('sale.order','create', ...)`.
+
+## 3. Flujo de Sincronización de Pedidos
+
+1. **Hook Automático**:
+   ```php
+   add_action('woocommerce_order_status_processing', [ $this, 'sync_order_to_odoo' ], 10, 1);
+   ```
+2. **Acción Manual** desde interfaz: dropdown y botón AJAX → `process_order_sync_action()` → `sync_order_to_odoo()`.
+   - Envolver en `try/catch` y responder con `wp_send_json_error()` para no mostrar pantalla en blanco.
+3. **Autenticación** en `/xmlrpc/2/common` (cachear `uid` y endpoint de objeto una sola vez).
+4. **Reutilización**:
+   ```php
+   $partner_id = $this->get_or_create_odoo_customer($order);
+   foreach ($order->get_items() as $item) {
+       $product_id = $this->get_or_create_odoo_product($item->get_product());
+       $order_lines[] = [0, 0, [
+           'product_id' => $product_id,
+           'product_uom_qty' => $item->get_quantity(),
+           'price_unit' => (float) $item->get_total(),
+           'name' => $item->get_name(),
+           'tax_id' => [[6, 0, $this->get_tax_ids($item)]]
+       ]];
+   }
+   ```
+5. **Llamada Final**:
+   ```php
+   $params = [
+     'partner_id' => $partner_id,
+     'partner_invoice_id' => $partner_id,
+     'partner_shipping_id' => $partner_id,
+     'date_order' => 'YYYY-MM-DD HH:MM:SS',
+     'client_order_ref' => 'ORDER_NUMBER',
+     'currency_id' => $currency_id,
+     'pricelist_id' => $pricelist_id,
+     'external_reference' => 'EXTERNAL_ID',
+     'order_line' => $order_lines,
+     'tax_line_ids' => [[6,0,$order_tax_ids]],
+     'carrier_id' => $carrier_id,
+     'shipping_price' => $shipping_total,
+     'note' => $order->get_customer_note(),
+   ];
+
+   $odoo_order_id = xmlrpc_execute_kw(
+     $database,
+     $uid,
+     $api_key,
+     'sale.order',
+     'create',
+     [$params]
+   );
+   ```
+
+## 4. Campos Clave del Payload de WooCommerce
+
+A continuación un **extracto simplificado** del array PHP que genera WooCommerce (`WC_Order->get_data()`) para mostrar solo los valores que necesitamos mapear:
+
+```php
+$order_data = [
+  'id'             => 82800,
+  'status'         => 'on-hold',
+  'currency'       => 'COP',
+  'total'          => '244800.00',
+  'billing'        => [
+    'email'      => 'doris423@hotmail.com',
+    'first_name' => 'doris',
+    'last_name'  => '',
+    'address_1'  => 'Calle 56 A #1 F42 las Mercedes',
+    'city'       => 'Neiva',
+    'state'      => 'HUI',
+    'country'    => 'CO',
+    'tipoIdentificacion' => '13',
+    'billingId'          => '222222222222',
+  ],
+  'shipping' => [ /* campos similares */ ],
+  'line_items' => [
+    [ 'sku' => 'FL091', 'quantity' => 1, 'total' => '234800.00' ]
+  ],
+  'shipping_total' => '10000.00',
+  'meta_data' => [
+    ['key'=>'external_id','value'=>'863b14...'],
+    ['key'=>'tipo_identificacion','value'=>'13'],
+    ['key'=>'billing_id','value'=>'222222222222'],
+  ],
+];
+``` 
+
+**Valores imprescindibles**:
+- Identificador de orden: `$order_data['id']` o `get_order_number()` → `client_order_ref`.
+- Cliente: `$order_data['billing']['email']`, `tipoIdentificacion`, `billingId` → `get_or_create_odoo_customer()`.
+- Productos/variantes: `$order_data['line_items'][i]['sku']` → `get_or_create_odoo_product()`.
+- Totales: `total`, `totalTax`, `shipping_total`.
+- Moneda: `currency` → `currency_id`.
+- Fecha: `get_date_created()->format('Y-m-d H:i:s')`.
+- Referencia externa: `meta_data['external_id']` → `external_reference`.
+
+## 5. Creación Condicional de Cliente/Producto
+
+- Si `get_or_create_odoo_customer()` **no encuentra** al cliente, **lo crea** y guarda `user_meta` `_odoo_customer_id`.
+- Si `get_or_create_odoo_product()` **no encuentra** el producto o variante, **lo crea** y guarda `post_meta` `_odoo_product_id`.
+- En ambos casos, si ya existe, **devuelven el ID** y se **asignan** a la orden.
+
+## 6. Manejo de Errores y Logs
+
+- Envolver cada paso en `try/catch`, retornar **WP_Error** con:
+  - `missing_credentials`
+  - `connection_error`
+  - `auth_failed`
+  - `create_error`
+  - `sync_exception`
+- Para AJAX: usar `wp_send_json_error(['message'=>$e->getMessage()])`.
+- Activar logs en `wp-content/debug.log` con `error_log()`.
+
+## 7. Pruebas y Calidad
+
+```bash
+# PHPUnit
+vendor/bin/phpunit --testsuite odaflow
+# Linter PSR-12
+composer exec phpcs -- --standard=PSR12 includes/
+```
+
+---
+
+**Nota**: Guarda este `AGENTS.md` en la raíz del repositorio para que Codex lo utilice como contexto principal al procesar cualquier solicitud de sincronización de pedidos.
