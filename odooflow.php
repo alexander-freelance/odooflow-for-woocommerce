@@ -2549,7 +2549,20 @@ class OdooFlow {
 
                 $existing_ids = xmlrpc_decode(wp_remote_retrieve_body($search_response));
 
-                // Prepare customer data
+                // Prepare customer data with geographic mapping
+                $country_id = $this->get_country_id(
+                    $wc_customer->get_billing_country(),
+                    $database, $uid, $api_key, $object_endpoint
+                );
+                $state_id = $this->get_state_id(
+                    $wc_customer->get_billing_state(),
+                    $country_id, $database, $uid, $api_key, $object_endpoint
+                );
+                $city_id = $this->get_city_id(
+                    $wc_customer->get_billing_city(),
+                    $state_id, $database, $uid, $api_key, $object_endpoint
+                );
+
                 $customer_data = array(
                     'name'  => $wc_customer->get_first_name() . ' ' . $wc_customer->get_last_name(),
                     'email' => $wc_customer->get_email(),
@@ -2557,9 +2570,18 @@ class OdooFlow {
                     'street'=> $wc_customer->get_billing_address_1(),
                     'street2'=> $wc_customer->get_billing_address_2(),
                     'city'  => $wc_customer->get_billing_city(),
+                    'country_id' => $country_id,
                     'customer_rank' => 1,
                     'type'  => 'contact'
                 );
+
+                if ($state_id) {
+                    $customer_data['state_id'] = $state_id;
+                }
+
+                if ($city_id) {
+                    $customer_data['city_id'] = $city_id;
+                }
 
                 /* ➕  Enriquecemos con NIT + Tipo DIAN */
                 $customer_data = $this->oflow_add_col_fields(
@@ -2979,6 +3001,22 @@ class OdooFlow {
             if ($odoo_customer_id) return $odoo_customer_id;
         }
 
+        $object_endpoint = rtrim(get_option('odooflow_odoo_url', ''), '/') . '/xmlrpc/2/object';
+
+        // Prepare geographical information
+        $country_id = $this->get_country_id(
+            $order->get_billing_country(),
+            $database, $uid, $api_key, $object_endpoint
+        );
+        $state_id = $this->get_state_id(
+            $order->get_billing_state(),
+            $country_id, $database, $uid, $api_key, $object_endpoint
+        );
+        $city_id = $this->get_city_id(
+            $order->get_billing_city(),
+            $state_id, $database, $uid, $api_key, $object_endpoint
+        );
+
         // Create customer in Odoo
         $customer_data = array(
             'name'  => $order->get_formatted_billing_full_name(),
@@ -2987,17 +3025,25 @@ class OdooFlow {
             'street'=> $order->get_billing_address_1(),
             'street2'=> $order->get_billing_address_2(),
             'city'  => $order->get_billing_city(),
-            'country_id' => $this->get_country_id( $order->get_billing_country() ),
+            'country_id' => $country_id,
             'customer_rank' => 1,
             'type'  => 'contact'
         );
+
+        if ($state_id) {
+            $customer_data['state_id'] = $state_id;
+        }
+
+        if ($city_id) {
+            $customer_data['city_id'] = $city_id;
+        }
 
         /* ➕  Enriquecer con los metadatos del pedido (guest checkout) */
         $customer_data = $this->oflow_add_col_fields(
             $order,
             $customer_data,
             $database, $uid, $api_key,
-            rtrim( get_option('odooflow_odoo_url',''), '/' ) . '/xmlrpc/2/object'
+            $object_endpoint
         );
 
         // Create customer in Odoo
@@ -3082,10 +3128,103 @@ class OdooFlow {
     /**
      * Get country ID from Odoo
      */
-    private function get_country_id($country_code) {
-        // Implementation to get country ID from Odoo
-        // This would need to be cached for performance
-        return 0; // Placeholder
+    private function get_country_id($country_code, $database, $uid, $api_key, $object_ep) {
+        static $cache = array();
+        $code = strtoupper($country_code);
+        if (isset($cache[$code])) {
+            return $cache[$code];
+        }
+        if (empty($code)) {
+            return 0;
+        }
+
+        $search_req = xmlrpc_encode_request('execute_kw', array(
+            $database, $uid, $api_key,
+            'res.country', 'search',
+            array(array(array('code', '=', $code))), 0, 1
+        ));
+
+        $resp = wp_remote_post($object_ep, array(
+            'body' => $search_req,
+            'headers' => array('Content-Type' => 'text/xml'),
+            'timeout' => 30,
+            'sslverify' => false
+        ));
+
+        $ids = is_wp_error($resp) ? array() : xmlrpc_decode(wp_remote_retrieve_body($resp));
+        $cache[$code] = (is_array($ids) && $ids) ? $ids[0] : 0;
+
+        return $cache[$code];
+    }
+
+    /**
+     * Get state ID from Odoo
+     */
+    private function get_state_id($state_code, $country_id, $database, $uid, $api_key, $object_ep) {
+        static $cache = array();
+        $key = $country_id . ':' . strtoupper($state_code);
+        if (isset($cache[$key])) {
+            return $cache[$key];
+        }
+        if (empty($state_code) || empty($country_id)) {
+            return 0;
+        }
+
+        $search_req = xmlrpc_encode_request('execute_kw', array(
+            $database, $uid, $api_key,
+            'res.country.state', 'search',
+            array(array(
+                array('code', '=', strtoupper($state_code)),
+                array('country_id', '=', $country_id)
+            )), 0, 1
+        ));
+
+        $resp = wp_remote_post($object_ep, array(
+            'body' => $search_req,
+            'headers' => array('Content-Type' => 'text/xml'),
+            'timeout' => 30,
+            'sslverify' => false
+        ));
+
+        $ids = is_wp_error($resp) ? array() : xmlrpc_decode(wp_remote_retrieve_body($resp));
+        $cache[$key] = (is_array($ids) && $ids) ? $ids[0] : 0;
+
+        return $cache[$key];
+    }
+
+    /**
+     * Get city ID from Odoo
+     */
+    private function get_city_id($city_name, $state_id, $database, $uid, $api_key, $object_ep) {
+        static $cache = array();
+        $key = $state_id . ':' . strtolower($city_name);
+        if (isset($cache[$key])) {
+            return $cache[$key];
+        }
+        if (empty($city_name) || empty($state_id)) {
+            return 0;
+        }
+
+        $search_req = xmlrpc_encode_request('execute_kw', array(
+            $database, $uid, $api_key,
+            'res.city', 'search',
+            array(array(
+                array('name', 'ilike', $city_name),
+                array('state_id', '=', $state_id)
+            )), 0, 1
+        ));
+
+        $resp = wp_remote_post($object_ep, array(
+            'body' => $search_req,
+            'headers' => array('Content-Type' => 'text/xml'),
+            'timeout' => 30,
+            'sslverify' => false
+        ));
+
+        $ids = is_wp_error($resp) ? array() : xmlrpc_decode(wp_remote_retrieve_body($resp));
+        $cache[$key] = (is_array($ids) && $ids) ? $ids[0] : 0;
+
+        return $cache[$key];
     }
 
     /**
