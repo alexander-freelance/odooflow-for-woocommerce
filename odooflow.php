@@ -42,6 +42,15 @@ class OdooFlow {
     protected static $_instance = null;
 
     /**
+     * Cached Odoo connection details.
+     */
+    private $odoo_url = '';
+    private $odoo_database = '';
+    private $odoo_username = '';
+    private $odoo_api_key = '';
+    private $odoo_uid = null;
+
+    /**
      * Main OdooFlow Instance
      * 
      * Ensures only one instance of OdooFlow is loaded or can be loaded.
@@ -2717,36 +2726,21 @@ class OdooFlow {
     private function sync_order_to_odoo($order) {
         error_log('OdooFlow: Starting order sync for order #' . $order->get_id());
         
-        $odoo_url = get_option('odooflow_odoo_url', '');
-        $username = get_option('odooflow_username', '');
-        $api_key = get_option('odooflow_api_key', '');
-        $database = get_option('odooflow_database', '');
-
-        if (empty($odoo_url) || empty($username) || empty($api_key) || empty($database)) {
-            $error_message = 'Odoo connection settings are incomplete.';
+        $connect = $this->init_odoo_connection();
+        if (is_wp_error($connect)) {
+            $error_message = $connect->get_error_message();
             error_log('OdooFlow: ' . $error_message);
-            //$order->add_order_note(__('Odoo Sync Failed: ' . $error_message, 'odooflow'));
-            // translators: %s is the error message explaining why the Odoo sync failed.
             $order->add_order_note(sprintf(__('Odoo Sync Failed: %s', 'odooflow'), $error_message));
-            //return new WP_Error('missing_credentials', __($error_message, 'odooflow'));
-            // translators: %s is the specific error message detailing why credentials are missing.
-            return new WP_Error('missing_credentials', sprintf(__('Missing credentials: %s', 'odooflow'), $error_message));
+            return $connect;
         }
 
         try {
-            // Authenticate with Odoo
-            error_log('OdooFlow: Authenticating with Odoo server');
-            $auth_result = $this->authenticate_odoo($odoo_url, $database, $username, $api_key);
-            if (is_wp_error($auth_result)) {
-                $error_message = 'Authentication failed: ' . $auth_result->get_error_message();
-                error_log('OdooFlow: ' . $error_message);
-                
-                // translators: %s is the error message explaining why the Odoo sync failed.
-                $order->add_order_note(sprintf(__('Odoo Sync Failed: %s', 'odooflow'), $error_message));
-                return $auth_result;
-            }
-            $uid = $auth_result;
-            error_log('OdooFlow: Successfully authenticated with UID: ' . $uid);
+            $uid      = $this->odoo_uid;
+            $database = $this->odoo_database;
+            $api_key  = $this->odoo_api_key;
+            $odoo_url = $this->odoo_url;
+
+            error_log('OdooFlow: Using authenticated UID: ' . $uid);
 
             // Get order data
             error_log('OdooFlow: Preparing order data');
@@ -2831,6 +2825,34 @@ class OdooFlow {
         }
 
         return $uid;
+    }
+
+    /**
+     * Initialize Odoo connection if not already authenticated.
+     *
+     * @return true|WP_Error True on success, WP_Error on failure.
+     */
+    private function init_odoo_connection() {
+        if ($this->odoo_uid) {
+            return true;
+        }
+
+        $this->odoo_url      = get_option('odooflow_odoo_url', '');
+        $this->odoo_username  = get_option('odooflow_username', '');
+        $this->odoo_api_key   = get_option('odooflow_api_key', '');
+        $this->odoo_database  = get_option('odooflow_database', '');
+
+        if (empty($this->odoo_url) || empty($this->odoo_username) || empty($this->odoo_api_key) || empty($this->odoo_database)) {
+            return new WP_Error('missing_credentials', __('Odoo connection settings are incomplete.', 'odooflow'));
+        }
+
+        $uid = $this->authenticate_odoo($this->odoo_url, $this->odoo_database, $this->odoo_username, $this->odoo_api_key);
+        if (is_wp_error($uid)) {
+            return $uid;
+        }
+
+        $this->odoo_uid = $uid;
+        return true;
     }
 
     /**
