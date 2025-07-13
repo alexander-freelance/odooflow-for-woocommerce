@@ -2686,16 +2686,19 @@ class OdooFlow {
      */
     public function process_order_sync_action($order) {
         error_log('OdooFlow: Processing order sync action for order #' . $order->get_id());
-        
+
         $order_id = $order->get_id();
-        $result = $this->sync_order_to_odoo($order);
-        
+        try {
+            $result = $this->sync_order_to_odoo($order);
+        } catch (\Throwable $e) {
+            $result = new WP_Error('sync_error', $e->getMessage());
+        }
+
         if (is_wp_error($result)) {
-            error_log('OdooFlow: Order sync failed - ' . $result->get_error_message());
-            // Add error notice
+            $this->oflow_log_and_note($order, 'Order sync failed - ' . $result->get_error_message());
             add_action('admin_notices', function() use ($result) {
-                echo '<div class="notice notice-error"><p>' . 
-                     esc_html($result->get_error_message()) . 
+                echo '<div class="notice notice-error"><p>' .
+                     esc_html($result->get_error_message()) .
                      '</p></div>';
             });
         } else {
@@ -2793,12 +2796,9 @@ class OdooFlow {
 
             return $result;
 
-        } catch (Exception $e) {
+        } catch (\Throwable $e) {
             $error_message = 'Error syncing order to Odoo: ' . $e->getMessage();
-            error_log('OdooFlow: ' . $error_message);
-            //$order->add_order_note(__('Odoo Sync Failed: ' . $error_message, 'odooflow'));
-            // translators: %s is the error message explaining why the Odoo sync failed.
-            $order->add_order_note(sprintf(__('Odoo Sync Failed: %s', 'odooflow'), $error_message));
+            $this->oflow_log_and_note($order, $error_message);
             return new WP_Error('sync_error', $e->getMessage());
         }
     }
@@ -2840,9 +2840,8 @@ class OdooFlow {
         error_log('OdooFlow: Preparing order data for order #' . $order->get_id());
         
         $order_status = $order->get_status();
-        $order_type = $this->get_odoo_order_type($order_status);
-        
-        error_log('OdooFlow: Order status: ' . $order_status . ', Odoo order type: ' . $order_type);
+
+        error_log('OdooFlow: Order status: ' . $order_status);
 
         // Get or create customer in Odoo
         $partner_id = $this->get_or_create_odoo_customer($order, $database, $uid, $api_key);
@@ -2852,30 +2851,33 @@ class OdooFlow {
             // phpcs:ignore WordPress.Security.EscapeOutput.ExceptionNotEscaped -- Log message, not HTML output.
             throw new Exception('Failed to get/create customer in Odoo: ' . $partner_id->get_error_message());
         }
+        if (!$partner_id) {
+            throw new Exception('No valid customer found for this order');
+        }
         error_log('OdooFlow: Using Odoo partner ID: ' . $partner_id);
 
         // Prepare order lines
         error_log('OdooFlow: Preparing order lines');
         $order_lines = $this->prepare_order_lines($order);
         error_log('OdooFlow: Order lines prepared: ' . print_r($order_lines, true));
+        if (empty($order_lines)) {
+            throw new Exception('No valid order lines found');
+        }
         
         $order_data = array(
-            'name' => 'WC' . $order->get_order_number(),
-            'partner_id' => $partner_id,
-            'date_order' => $order->get_date_created()->format('Y-m-d H:i:s'),
-            'state' => $this->map_order_status($order_status),
-            'order_type' => $order_type,
-            'order_line' => $order_lines,
-            'amount_tax' => $order->get_total_tax(),
-            'amount_total' => $order->get_total(),
-            'currency_id' => $this->get_currency_id($order->get_currency()),
-            'note' => $order->get_customer_note()
+            'partner_id'     => (int) $partner_id,
+            'order_line'     => $order_lines,
+            'client_order_ref' => $order->get_order_number(),
+            'origin'         => 'WooCommerce Order #' . $order->get_order_number(),
+            'state'          => $this->map_order_status($order_status),
+            'currency_id'    => $this->get_currency_id($order->get_currency()),
         );
 
-        // Add shipping information if exists
-        if ($order->get_shipping_total() > 0) {
+        // Always include shipping line using product_id 4
+        $shipping_line = $this->prepare_shipping_line($order);
+        if ($shipping_line) {
             error_log('OdooFlow: Adding shipping line');
-            $order_data['order_line'][] = $this->prepare_shipping_line($order);
+            $order_data['order_line'][] = $shipping_line;
         }
 
         error_log('OdooFlow: Final order data prepared: ' . print_r($order_data, true));
@@ -2902,27 +2904,6 @@ class OdooFlow {
     }
 
     /**
-     * Get Odoo order type based on WooCommerce order status
-     */
-    private function get_odoo_order_type($status) {
-        $type = 'order';
-        switch ($status) {
-            case 'completed':
-                $type = 'sale';
-                break;
-            case 'processing':
-                $type = 'order';
-                break;
-            case 'pending':
-            case 'on-hold':
-                $type = 'quote';
-                break;
-        }
-        error_log('OdooFlow: Determined order type ' . $type . ' for status ' . $status);
-        return $type;
-    }
-
-    /**
      * Prepare order line items for Odoo
      */
     private function prepare_order_lines($order) {
@@ -2930,16 +2911,19 @@ class OdooFlow {
         
         foreach ($order->get_items() as $item) {
             $product_id = $this->get_or_create_odoo_product($item->get_product());
-            if (!$product_id) continue;
+            if (!$product_id) {
+                continue;
+            }
 
+            $qty = (float) $item->get_quantity();
             $line = array(
-                'product_id' => $product_id,
-                'name' => $item->get_name(),
-                'product_uom_qty' => $item->get_quantity(),
-                'price_unit' => $item->get_total() / $item->get_quantity(),
-                'tax_id' => $this->get_tax_ids($item),
-                'discount' => $item->get_subtotal() > 0 ? 
-                    (1 - $item->get_total() / $item->get_subtotal()) * 100 : 0
+                'product_id'      => (int) $product_id,
+                'name'            => $item->get_name(),
+                'product_uom_qty' => $qty,
+                'price_unit'      => $qty ? (float) $item->get_total() / $qty : 0,
+                'discount'        => $item->get_subtotal() > 0
+                    ? (1 - $item->get_total() / $item->get_subtotal()) * 100
+                    : 0,
             );
 
             $lines[] = array(0, 0, $line);
@@ -2949,15 +2933,18 @@ class OdooFlow {
     }
 
     /**
-     * Prepare shipping line for Odoo
+     * Prepare a shipping line for Odoo using product ID 4.
      */
     private function prepare_shipping_line($order) {
+        $shipping_total = 0;
+        foreach ($order->get_items('shipping') as $shipping_item) {
+            $shipping_total += (float) $shipping_item->get_total();
+        }
+
         return array(0, 0, array(
-            'name' => $order->get_shipping_method(),
-            'price_unit' => $order->get_shipping_total(),
+            'product_id'      => 4,
             'product_uom_qty' => 1,
-            'tax_id' => $this->get_shipping_tax_ids($order),
-            'is_delivery' => true
+            'price_unit'      => $shipping_total,
         ));
     }
 
@@ -3085,55 +3072,19 @@ class OdooFlow {
     }
 
     /**
-     * Get tax IDs from Odoo
-     */
-    private function get_tax_ids($item) {
-        $taxes = $item->get_taxes();
-        $tax_ids = array();
-
-        foreach ($taxes['total'] as $tax_id => $amount) {
-            $odoo_tax_id = $this->get_odoo_tax_id($tax_id);
-            if ($odoo_tax_id) {
-                $tax_ids[] = $odoo_tax_id;
-            }
-        }
-
-        return array(6, 0, $tax_ids);
-    }
-
-    /**
-     * Get shipping tax IDs
-     */
-    private function get_shipping_tax_ids($order) {
-        $taxes = $order->get_shipping_taxes();
-        $tax_ids = array();
-
-        foreach ($taxes as $tax_id => $amount) {
-            $odoo_tax_id = $this->get_odoo_tax_id($tax_id);
-            if ($odoo_tax_id) {
-                $tax_ids[] = $odoo_tax_id;
-            }
-        }
-
-        return array(6, 0, $tax_ids);
-    }
-
-    /**
-     * Get Odoo tax ID
-     */
-    private function get_odoo_tax_id($wc_tax_id) {
-        // Implementation to map WooCommerce tax to Odoo tax
-        // This would need to be configured in the plugin settings
-        return 0; // Placeholder
-    }
-
-    /**
      * Get currency ID from Odoo
      */
     private function get_currency_id($currency_code) {
-        // Implementation to get currency ID from Odoo
-        // This would need to be cached for performance
-        return 0; // Placeholder
+        $code = strtoupper(trim($currency_code));
+        $map = array(
+            'COP' => 8,
+            'USD' => 1,
+        );
+        if (isset($map[$code])) {
+            return $map[$code];
+        }
+        // Default to COP if unknown
+        return 8;
     }
 
     /**
@@ -3331,6 +3282,19 @@ class OdooFlow {
     }
 
     /**
+     * Helper to log a message and add an order note
+     *
+     * @param WC_Order $order   WooCommerce order instance.
+     * @param string   $message Message to log and display.
+     */
+    private function oflow_log_and_note($order, $message) {
+        error_log('OdooFlow: ' . $message);
+        if ($order instanceof \WC_Order) {
+            $order->add_order_note($message);
+        }
+    }
+
+    /**
      * Add plugin author link
      */
     public function plugin_author_link($author_name, $plugin_file) {
@@ -3421,19 +3385,7 @@ class OdooFlow {
                                 <p class="description">' . __('Select the customer in Odoo to associate with this order.', 'odooflow') . '</p>
                             </div>
 
-                            <div class="form-field">
-                                <label>' . __('Type', 'odooflow') . '</label>
-                                <div class="order-type-wrapper">
-                                    <label class="radio-label">
-                                        <input type="radio" name="order_type" value="quote" checked>
-                                        ' . __('Quote', 'odooflow') . '
-                                    </label>
-                                    <label class="radio-label">
-                                        <input type="radio" name="order_type" value="sale">
-                                        ' . __('Sales Order', 'odooflow') . '
-                                    </label>
-                                </div>
-                            </div>
+
 
                             <div class="form-field product-lines">
                                 <label>' . __('Products', 'odooflow') . '</label>
@@ -3489,8 +3441,15 @@ class OdooFlow {
             wp_send_json_error(array('message' => __('Order not found.', 'odooflow')));
         }
 
-        $result = $this->sync_order_to_odoo($order);
+        try {
+            $result = $this->sync_order_to_odoo($order);
+        } catch (\Throwable $e) {
+            $this->oflow_log_and_note($order, 'Error syncing order to Odoo: ' . $e->getMessage());
+            wp_send_json_error(array('message' => $e->getMessage()));
+        }
+
         if (is_wp_error($result)) {
+            $this->oflow_log_and_note($order, 'Error syncing order to Odoo: ' . $result->get_error_message());
             wp_send_json_error(array('message' => $result->get_error_message()));
         }
 
@@ -3653,7 +3612,6 @@ class OdooFlow {
 
         $order_id = isset($_POST['order_id']) ? absint($_POST['order_id']) : 0;
         $customer_id = isset($_POST['customer_id']) ? absint($_POST['customer_id']) : 0;
-        $order_type = isset($_POST['order_type']) ? sanitize_text_field($_POST['order_type']) : 'quote';
         $products = isset($_POST['products']) ? json_decode(stripslashes($_POST['products']), true) : array();
 
         if (!$order_id || !$customer_id || empty($products)) {
@@ -3697,13 +3655,9 @@ class OdooFlow {
                 'partner_id' => $customer_id,
                 'order_line' => $order_lines,
                 'client_order_ref' => $order->get_order_number(),
-                'origin' => 'WooCommerce Order #' . $order->get_order_number()
+                'origin' => 'WooCommerce Order #' . $order->get_order_number(),
+                'state' => 'sale'
             );
-
-            // If this is a sales order, set the state
-            if ($order_type === 'sale') {
-                $order_data['state'] = 'sale';
-            }
 
             // Create order in Odoo
             $request = xmlrpc_encode_request('execute_kw', array(
@@ -3731,27 +3685,25 @@ class OdooFlow {
                 throw new Exception(__('Invalid response from Odoo', 'odooflow'));
             }
 
-            // If this is a sales order, confirm it
-            if ($order_type === 'sale') {
-                $confirm_request = xmlrpc_encode_request('execute_kw', array(
-                    $database,
-                    $uid,
-                    $api_key,
-                    'sale.order',
-                    'action_confirm',
-                    array(array($odoo_order_id))
-                ));
+            // Confirm the sales order
+            $confirm_request = xmlrpc_encode_request('execute_kw', array(
+                $database,
+                $uid,
+                $api_key,
+                'sale.order',
+                'action_confirm',
+                array(array($odoo_order_id))
+            ));
 
-                $confirm_response = wp_remote_post(rtrim($odoo_url, '/') . '/xmlrpc/2/object', array(
-                    'body' => $confirm_request,
-                    'headers' => array('Content-Type' => 'text/xml'),
-                    'timeout' => 30,
-                    'sslverify' => false
-                ));
+            $confirm_response = wp_remote_post(rtrim($odoo_url, '/') . '/xmlrpc/2/object', array(
+                'body' => $confirm_request,
+                'headers' => array('Content-Type' => 'text/xml'),
+                'timeout' => 30,
+                'sslverify' => false
+            ));
 
-                if (is_wp_error($confirm_response)) {
-                    throw new Exception($confirm_response->get_error_message());
-                }
+            if (is_wp_error($confirm_response)) {
+                throw new Exception($confirm_response->get_error_message());
             }
 
             // Save Odoo order ID to WooCommerce order
@@ -3766,7 +3718,8 @@ class OdooFlow {
                 )
             ));
 
-        } catch (Exception $e) {
+        } catch (\Throwable $e) {
+            $this->oflow_log_and_note($order, 'Error creating order in Odoo: ' . $e->getMessage());
             wp_send_json_error(array('message' => $e->getMessage()));
         }
     }
