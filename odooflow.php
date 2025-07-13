@@ -2716,20 +2716,16 @@ class OdooFlow {
      */
     private function sync_order_to_odoo($order) {
         error_log('OdooFlow: Starting order sync for order #' . $order->get_id());
-        
+
         $odoo_url = get_option('odooflow_odoo_url', '');
-        $username = get_option('odooflow_username', '');
-        $api_key = get_option('odooflow_api_key', '');
-        $database = get_option('odooflow_database', '');
+        $username  = get_option('odooflow_username', '');
+        $api_key   = get_option('odooflow_api_key', '');
+        $database  = get_option('odooflow_database', '');
 
         if (empty($odoo_url) || empty($username) || empty($api_key) || empty($database)) {
             $error_message = 'Odoo connection settings are incomplete.';
             error_log('OdooFlow: ' . $error_message);
-            //$order->add_order_note(__('Odoo Sync Failed: ' . $error_message, 'odooflow'));
-            // translators: %s is the error message explaining why the Odoo sync failed.
             $order->add_order_note(sprintf(__('Odoo Sync Failed: %s', 'odooflow'), $error_message));
-            //return new WP_Error('missing_credentials', __($error_message, 'odooflow'));
-            // translators: %s is the specific error message detailing why credentials are missing.
             return new WP_Error('missing_credentials', sprintf(__('Missing credentials: %s', 'odooflow'), $error_message));
         }
 
@@ -2740,54 +2736,95 @@ class OdooFlow {
             if (is_wp_error($auth_result)) {
                 $error_message = 'Authentication failed: ' . $auth_result->get_error_message();
                 error_log('OdooFlow: ' . $error_message);
-                
-                // translators: %s is the error message explaining why the Odoo sync failed.
                 $order->add_order_note(sprintf(__('Odoo Sync Failed: %s', 'odooflow'), $error_message));
                 return $auth_result;
             }
             $uid = $auth_result;
             error_log('OdooFlow: Successfully authenticated with UID: ' . $uid);
 
-            // Get order data
-            error_log('OdooFlow: Preparing order data');
-            $order_data = $this->prepare_order_data($order, $database, $uid, $api_key);
-            error_log('OdooFlow: Order data prepared: ' . print_r($order_data, true));
-            
-            // Check if order exists in Odoo
+            // --- Cliente ---
+            try {
+                $partner_id = $this->sync_customer_to_odoo($order);
+                if (!$partner_id) {
+                    $partner_id = $this->create_customer_in_odoo($order);
+                }
+            } catch (Exception $e) {
+                error_log($e->getMessage());
+                error_log($e->getTraceAsString());
+                return new WP_Error('customer_sync_error', $e->getMessage());
+            }
+
+            // --- Productos ---
+            $order_lines = array();
+            foreach ($order->get_items() as $item) {
+                try {
+                    $product_id = $this->sync_product_to_odoo($item);
+                    if (!$product_id) {
+                        $product_id = $this->create_product_in_odoo($item);
+                    }
+                } catch (Exception $e) {
+                    error_log($e->getMessage());
+                    error_log($e->getTraceAsString());
+                    continue;
+                }
+
+                if ($product_id) {
+                    $order_lines[] = array(0, 0, array(
+                        'product_id'       => $product_id,
+                        'product_uom_qty'  => $item->get_quantity(),
+                        'price_unit'       => $item->get_quantity() > 0 ? $item->get_total() / $item->get_quantity() : 0,
+                    ));
+                }
+            }
+
+            if ($order->get_shipping_total() > 0) {
+                $order_lines[] = $this->prepare_shipping_line($order);
+            }
+
+            $order_status = $order->get_status();
+            $order_data   = array(
+                'name'        => 'WC' . $order->get_order_number(),
+                'partner_id'  => $partner_id,
+                'date_order'  => $order->get_date_created()->format('Y-m-d H:i:s'),
+                'state'       => $this->map_order_status($order_status),
+                'order_type'  => $this->get_odoo_order_type($order_status),
+                'order_line'  => $order_lines,
+                'amount_tax'  => $order->get_total_tax(),
+                'amount_total'=> $order->get_total(),
+                'currency_id' => $this->get_currency_id($order->get_currency()),
+                'note'        => $order->get_customer_note(),
+            );
+
+            // --- Enviar orden ---
             $odoo_order_id = get_post_meta($order->get_id(), '_odoo_order_id', true);
-            
             if ($odoo_order_id) {
-                error_log('OdooFlow: Updating existing Odoo order #' . $odoo_order_id);
-                // Update existing order
-                $result = $this->update_odoo_order($odoo_url, $database, $uid, $api_key, $odoo_order_id, $order_data);
+                try {
+                    $result = $this->update_odoo_order($odoo_url, $database, $uid, $api_key, $odoo_order_id, $order_data);
+                } catch (Exception $e) {
+                    error_log($e->getMessage());
+                    error_log($e->getTraceAsString());
+                    return new WP_Error('update_error', $e->getMessage());
+                }
+
                 if (!is_wp_error($result)) {
-                    // translators: %s is the Odoo order ID.
-                    $success_message = sprintf(__('Order successfully updated in Odoo (ID: %s)', 'odooflow'), $odoo_order_id);
-                    error_log('OdooFlow: ' . $success_message);
-                    $order->add_order_note($success_message);
+                    $order->add_order_note(sprintf(__('Order successfully updated in Odoo (ID: %s)', 'odooflow'), $odoo_order_id));
                 } else {
-                    $error_message = 'Failed to update order in Odoo: ' . $result->get_error_message();
-                    error_log('OdooFlow: ' . $error_message);
-                    //$order->add_order_note(__('Odoo Sync Failed: ' . $error_message, 'odooflow'));
-                    // translators: %s is the error message explaining why the Odoo sync failed.
-                    $order->add_order_note(sprintf(__('Odoo Sync Failed: %s', 'odooflow'), $error_message));
+                    $order->add_order_note(sprintf(__('Odoo Sync Failed: %s', 'odooflow'), $result->get_error_message()));
                 }
             } else {
-                error_log('OdooFlow: Creating new order in Odoo');
-                // Create new order
-                $result = $this->create_odoo_order($odoo_url, $database, $uid, $api_key, $order_data);
+                try {
+                    $result = $this->create_odoo_order($odoo_url, $database, $uid, $api_key, $order_data);
+                } catch (Exception $e) {
+                    error_log($e->getMessage());
+                    error_log($e->getTraceAsString());
+                    return new WP_Error('create_error', $e->getMessage());
+                }
+
                 if (!is_wp_error($result)) {
                     update_post_meta($order->get_id(), '_odoo_order_id', $result);
-                    // translators: %s is the Odoo order ID.
-                    $success_message = sprintf(__('Order successfully created in Odoo (ID: %s)', 'odooflow'), $result);
-                    error_log('OdooFlow: ' . $success_message);
-                    $order->add_order_note($success_message);
+                    $order->add_order_note(sprintf(__('Order successfully created in Odoo (ID: %s)', 'odooflow'), $result));
                 } else {
-                    $error_message = 'Failed to create order in Odoo: ' . $result->get_error_message();
-                    error_log('OdooFlow: ' . $error_message);
-                    //$order->add_order_note(__('Odoo Sync Failed: ' . $error_message, 'odooflow'));
-                     // translators: %s is the error message explaining why the Odoo sync failed.
-                    $order->add_order_note(sprintf(__('Odoo Sync Failed: %s', 'odooflow'), $error_message));
+                    $order->add_order_note(sprintf(__('Odoo Sync Failed: %s', 'odooflow'), $result->get_error_message()));
                 }
             }
 
@@ -2796,8 +2833,6 @@ class OdooFlow {
         } catch (Exception $e) {
             $error_message = 'Error syncing order to Odoo: ' . $e->getMessage();
             error_log('OdooFlow: ' . $error_message);
-            //$order->add_order_note(__('Odoo Sync Failed: ' . $error_message, 'odooflow'));
-            // translators: %s is the error message explaining why the Odoo sync failed.
             $order->add_order_note(sprintf(__('Odoo Sync Failed: %s', 'odooflow'), $error_message));
             return new WP_Error('sync_error', $e->getMessage());
         }
@@ -3082,6 +3117,159 @@ class OdooFlow {
         // This would use the XML-RPC API to create a customer
         // Return the Odoo customer ID or WP_Error
         return 0; // Placeholder
+    }
+
+    /**
+     * Sync customer to Odoo
+     */
+    private function sync_customer_to_odoo($order) {
+        try {
+            $odoo_url = get_option('odooflow_odoo_url', '');
+            $username = get_option('odooflow_username', '');
+            $api_key  = get_option('odooflow_api_key', '');
+            $database = get_option('odooflow_database', '');
+
+            $uid = $this->authenticate_odoo($odoo_url, $database, $username, $api_key);
+            if (is_wp_error($uid)) {
+                throw new Exception($uid->get_error_message());
+            }
+
+            $result = $this->get_or_create_odoo_customer($order, $database, $uid, $api_key);
+            if (is_wp_error($result)) {
+                throw new Exception($result->get_error_message());
+            }
+
+            return $result;
+        } catch (Exception $e) {
+            error_log($e->getMessage());
+            error_log($e->getTraceAsString());
+            return 0;
+        }
+    }
+
+    /**
+     * Create customer in Odoo when sync fails
+     */
+    private function create_customer_in_odoo($order) {
+        try {
+            $odoo_url = get_option('odooflow_odoo_url', '');
+            $username = get_option('odooflow_username', '');
+            $api_key  = get_option('odooflow_api_key', '');
+            $database = get_option('odooflow_database', '');
+
+            $uid = $this->authenticate_odoo($odoo_url, $database, $username, $api_key);
+            if (is_wp_error($uid)) {
+                throw new Exception($uid->get_error_message());
+            }
+
+            $object_endpoint = rtrim($odoo_url, '/') . '/xmlrpc/2/object';
+            $country_id = $this->get_country_id($order->get_billing_country(), $database, $uid, $api_key, $object_endpoint);
+            $state_id   = $this->get_state_id($order->get_billing_state(), $country_id, $database, $uid, $api_key, $object_endpoint);
+            $city_id    = $this->get_city_id($order->get_billing_city(), $state_id, $database, $uid, $api_key, $object_endpoint);
+
+            $customer_data = array(
+                'name'          => $order->get_formatted_billing_full_name(),
+                'email'         => $order->get_billing_email(),
+                'phone'         => $order->get_billing_phone(),
+                'street'        => $order->get_billing_address_1(),
+                'street2'       => $order->get_billing_address_2(),
+                'city'          => $order->get_billing_city(),
+                'customer_rank' => 1,
+                'type'          => 'contact',
+            );
+
+            if ($country_id) {
+                $customer_data['country_id'] = $country_id;
+            }
+            if ($state_id) {
+                $customer_data['state_id'] = $state_id;
+            }
+            if ($city_id) {
+                $customer_data['city_id'] = $city_id;
+            }
+
+            $customer_data = $this->oflow_add_col_fields(
+                $order,
+                $customer_data,
+                $database,
+                $uid,
+                $api_key,
+                $object_endpoint
+            );
+
+            $result = $this->create_odoo_customer($customer_data);
+            if (is_wp_error($result)) {
+                throw new Exception($result->get_error_message());
+            }
+
+            if ($order->get_customer_id()) {
+                update_user_meta($order->get_customer_id(), '_odoo_customer_id', $result);
+            }
+
+            return $result;
+        } catch (Exception $e) {
+            error_log($e->getMessage());
+            error_log($e->getTraceAsString());
+            return 0;
+        }
+    }
+
+    /**
+     * Sync product to Odoo
+     */
+    private function sync_product_to_odoo($item) {
+        try {
+            $product = $item->get_product();
+            if (!$product) {
+                return 0;
+            }
+
+            $result = $this->get_or_create_odoo_product($product);
+            if (is_wp_error($result) || !$result) {
+                return 0;
+            }
+
+            return $result;
+        } catch (Exception $e) {
+            error_log($e->getMessage());
+            error_log($e->getTraceAsString());
+            return 0;
+        }
+    }
+
+    /**
+     * Create product in Odoo when sync fails
+     */
+    private function create_product_in_odoo($item) {
+        try {
+            $product = $item->get_product();
+            if (!$product) {
+                return 0;
+            }
+
+            $product_data = array(
+                'name'        => $product->get_name(),
+                'default_code'=> $product->get_sku(),
+                'list_price'  => $product->get_regular_price(),
+                'type'        => 'product',
+                'sale_ok'     => true,
+            );
+
+            $result = $this->create_odoo_product($product_data);
+            if (is_wp_error($result)) {
+                throw new Exception($result->get_error_message());
+            }
+
+            if ($product->get_id()) {
+                update_post_meta($product->get_id(), '_odoo_product_id', $result);
+            }
+
+            return $result;
+        } catch (Exception $e) {
+            error_log($e->getMessage());
+            error_log($e->getTraceAsString());
+            return 0;
+        }
     }
 
     /**
