@@ -2686,16 +2686,19 @@ class OdooFlow {
      */
     public function process_order_sync_action($order) {
         error_log('OdooFlow: Processing order sync action for order #' . $order->get_id());
-        
+
         $order_id = $order->get_id();
-        $result = $this->sync_order_to_odoo($order);
-        
+        try {
+            $result = $this->sync_order_to_odoo($order);
+        } catch (\Throwable $e) {
+            $result = new WP_Error('sync_error', $e->getMessage());
+        }
+
         if (is_wp_error($result)) {
-            error_log('OdooFlow: Order sync failed - ' . $result->get_error_message());
-            // Add error notice
+            $this->oflow_log_and_note($order, 'Order sync failed - ' . $result->get_error_message());
             add_action('admin_notices', function() use ($result) {
-                echo '<div class="notice notice-error"><p>' . 
-                     esc_html($result->get_error_message()) . 
+                echo '<div class="notice notice-error"><p>' .
+                     esc_html($result->get_error_message()) .
                      '</p></div>';
             });
         } else {
@@ -2793,12 +2796,9 @@ class OdooFlow {
 
             return $result;
 
-        } catch (Exception $e) {
+        } catch (\Throwable $e) {
             $error_message = 'Error syncing order to Odoo: ' . $e->getMessage();
-            error_log('OdooFlow: ' . $error_message);
-            //$order->add_order_note(__('Odoo Sync Failed: ' . $error_message, 'odooflow'));
-            // translators: %s is the error message explaining why the Odoo sync failed.
-            $order->add_order_note(sprintf(__('Odoo Sync Failed: %s', 'odooflow'), $error_message));
+            $this->oflow_log_and_note($order, $error_message);
             return new WP_Error('sync_error', $e->getMessage());
         }
     }
@@ -2852,12 +2852,18 @@ class OdooFlow {
             // phpcs:ignore WordPress.Security.EscapeOutput.ExceptionNotEscaped -- Log message, not HTML output.
             throw new Exception('Failed to get/create customer in Odoo: ' . $partner_id->get_error_message());
         }
+        if (!$partner_id) {
+            throw new Exception('No valid customer found for this order');
+        }
         error_log('OdooFlow: Using Odoo partner ID: ' . $partner_id);
 
         // Prepare order lines
         error_log('OdooFlow: Preparing order lines');
         $order_lines = $this->prepare_order_lines($order);
         error_log('OdooFlow: Order lines prepared: ' . print_r($order_lines, true));
+        if (empty($order_lines)) {
+            throw new Exception('No valid order lines found');
+        }
         
         $order_data = array(
             'name' => 'WC' . $order->get_order_number(),
@@ -3331,6 +3337,19 @@ class OdooFlow {
     }
 
     /**
+     * Helper to log a message and add an order note
+     *
+     * @param WC_Order $order   WooCommerce order instance.
+     * @param string   $message Message to log and display.
+     */
+    private function oflow_log_and_note($order, $message) {
+        error_log('OdooFlow: ' . $message);
+        if ($order instanceof \WC_Order) {
+            $order->add_order_note($message);
+        }
+    }
+
+    /**
      * Add plugin author link
      */
     public function plugin_author_link($author_name, $plugin_file) {
@@ -3489,8 +3508,15 @@ class OdooFlow {
             wp_send_json_error(array('message' => __('Order not found.', 'odooflow')));
         }
 
-        $result = $this->sync_order_to_odoo($order);
+        try {
+            $result = $this->sync_order_to_odoo($order);
+        } catch (\Throwable $e) {
+            $this->oflow_log_and_note($order, 'Error syncing order to Odoo: ' . $e->getMessage());
+            wp_send_json_error(array('message' => $e->getMessage()));
+        }
+
         if (is_wp_error($result)) {
+            $this->oflow_log_and_note($order, 'Error syncing order to Odoo: ' . $result->get_error_message());
             wp_send_json_error(array('message' => $result->get_error_message()));
         }
 
@@ -3766,7 +3792,8 @@ class OdooFlow {
                 )
             ));
 
-        } catch (Exception $e) {
+        } catch (\Throwable $e) {
+            $this->oflow_log_and_note($order, 'Error creating order in Odoo: ' . $e->getMessage());
             wp_send_json_error(array('message' => $e->getMessage()));
         }
     }
