@@ -1953,6 +1953,177 @@ class OdooFlow {
     }
 
     /**
+     * Get (or create) a product attribute in Odoo and return its ID
+     */
+    private function get_odoo_attribute_id($name, $odoo_url, $database, $uid, $api_key) {
+        static $cache = array();
+        if (isset($cache[$name])) {
+            return $cache[$name];
+        }
+
+        $object_ep = rtrim($odoo_url, '/') . '/xmlrpc/2/object';
+
+        $search_req = $this->xmlrpc_encode_utf8('execute_kw', array(
+            $database,
+            $uid,
+            $api_key,
+            'product.attribute',
+            'search',
+            array(array(array('name', '=', $name))),
+            0,
+            1
+        ));
+
+        $search_resp = wp_remote_post($object_ep, [
+            'body' => $search_req,
+            'headers' => ['Content-Type' => 'text/xml'],
+            'timeout' => 30,
+            'sslverify' => false
+        ]);
+
+        $ids = is_wp_error($search_resp) ? array() : xmlrpc_decode(wp_remote_retrieve_body($search_resp));
+        $attr_id = is_array($ids) && !empty($ids) ? $ids[0] : null;
+
+        if (!$attr_id) {
+            $create_req = $this->xmlrpc_encode_utf8('execute_kw', array(
+                $database,
+                $uid,
+                $api_key,
+                'product.attribute',
+                'create',
+                array(array('name' => $name))
+            ));
+
+            $create_resp = wp_remote_post($object_ep, [
+                'body' => $create_req,
+                'headers' => ['Content-Type' => 'text/xml'],
+                'timeout' => 30,
+                'sslverify' => false
+            ]);
+
+            $attr_id = is_wp_error($create_resp) ? null : xmlrpc_decode(wp_remote_retrieve_body($create_resp));
+            if (!is_numeric($attr_id)) {
+                $attr_id = null;
+            }
+        }
+
+        if ($attr_id) {
+            $cache[$name] = $attr_id;
+        }
+
+        return $attr_id;
+    }
+
+    /**
+     * Get (or create) a product attribute value in Odoo and return its ID
+     */
+    private function get_odoo_attribute_value_id($attribute_id, $name, $odoo_url, $database, $uid, $api_key) {
+        static $cache = array();
+        $key = $attribute_id . '|' . $name;
+        if (isset($cache[$key])) {
+            return $cache[$key];
+        }
+
+        $object_ep = rtrim($odoo_url, '/') . '/xmlrpc/2/object';
+
+        $search_req = $this->xmlrpc_encode_utf8('execute_kw', array(
+            $database,
+            $uid,
+            $api_key,
+            'product.attribute.value',
+            'search',
+            array(array(
+                array('name', '=', $name),
+                array('attribute_id', '=', $attribute_id)
+            )),
+            0,
+            1
+        ));
+
+        $search_resp = wp_remote_post($object_ep, [
+            'body' => $search_req,
+            'headers' => ['Content-Type' => 'text/xml'],
+            'timeout' => 30,
+            'sslverify' => false
+        ]);
+
+        $ids = is_wp_error($search_resp) ? array() : xmlrpc_decode(wp_remote_retrieve_body($search_resp));
+        $val_id = is_array($ids) && !empty($ids) ? $ids[0] : null;
+
+        if (!$val_id) {
+            $create_req = $this->xmlrpc_encode_utf8('execute_kw', array(
+                $database,
+                $uid,
+                $api_key,
+                'product.attribute.value',
+                'create',
+                array(array('name' => $name, 'attribute_id' => $attribute_id))
+            ));
+
+            $create_resp = wp_remote_post($object_ep, [
+                'body' => $create_req,
+                'headers' => ['Content-Type' => 'text/xml'],
+                'timeout' => 30,
+                'sslverify' => false
+            ]);
+
+            $val_id = is_wp_error($create_resp) ? null : xmlrpc_decode(wp_remote_retrieve_body($create_resp));
+            if (!is_numeric($val_id)) {
+                $val_id = null;
+            }
+        }
+
+        if ($val_id) {
+            $cache[$key] = $val_id;
+        }
+
+        return $val_id;
+    }
+
+    /**
+     * Get the product.template.attribute.value ID for a given template and attribute value
+     */
+    private function get_odoo_template_attribute_value_id($template_id, $value_id, $odoo_url, $database, $uid, $api_key) {
+        static $cache = array();
+        $key = $template_id . '|' . $value_id;
+        if (isset($cache[$key])) {
+            return $cache[$key];
+        }
+
+        $object_ep = rtrim($odoo_url, '/') . '/xmlrpc/2/object';
+
+        $search_req = $this->xmlrpc_encode_utf8('execute_kw', array(
+            $database,
+            $uid,
+            $api_key,
+            'product.template.attribute.value',
+            'search',
+            array(array(
+                array('product_tmpl_id', '=', $template_id),
+                array('product_attribute_value_id', '=', $value_id)
+            )),
+            0,
+            1
+        ));
+
+        $search_resp = wp_remote_post($object_ep, [
+            'body' => $search_req,
+            'headers' => ['Content-Type' => 'text/xml'],
+            'timeout' => 30,
+            'sslverify' => false
+        ]);
+
+        $ids = is_wp_error($search_resp) ? array() : xmlrpc_decode(wp_remote_retrieve_body($search_resp));
+        $ptav_id = is_array($ids) && !empty($ids) ? $ids[0] : null;
+
+        if ($ptav_id) {
+            $cache[$key] = $ptav_id;
+        }
+
+        return $ptav_id;
+    }
+
+    /**
      * Export a single product to Odoo
      */
     private function export_product_to_odoo($product, $selected_fields) {
@@ -2052,6 +2223,66 @@ class OdooFlow {
                         $product_data['image_1920'] = base64_encode($img_body);
                     }
                 }
+            }
+        }
+
+        // --- Variable product attributes ---
+        $attribute_map = array();
+        $attribute_value_map = array();
+        if ($product->is_type('variable')) {
+            // Use parent price if available, otherwise minimum variation price
+            if (empty($product_data['list_price'])) {
+                $prices = array();
+                foreach ($product->get_children() as $v_id) {
+                    $v = wc_get_product($v_id);
+                    if ($v) {
+                        $prices[] = (float) $v->get_regular_price();
+                    }
+                }
+                if (!empty($prices)) {
+                    $product_data['list_price'] = min($prices);
+                }
+            }
+
+            $attribute_lines = array();
+            foreach ($product->get_attributes() as $attr) {
+                if (!$attr->get_variation()) {
+                    continue;
+                }
+
+                $slug  = $attr->get_name();
+                $label = wc_attribute_label($slug);
+                $attr_id = $this->get_odoo_attribute_id($label, $odoo_url, $database, $uid, $api_key);
+                if (!$attr_id) {
+                    continue;
+                }
+
+                $attribute_map[$slug] = $attr_id;
+                $val_ids = array();
+                foreach ($attr->get_options() as $option) {
+                    if ($attr->is_taxonomy()) {
+                        $term = get_term($option);
+                        $name = $term ? $term->name : $option;
+                    } else {
+                        $name = $option;
+                    }
+                    $val_id = $this->get_odoo_attribute_value_id($attr_id, $name, $odoo_url, $database, $uid, $api_key);
+                    if ($val_id) {
+                        $val_ids[] = $val_id;
+                        $attribute_value_map[$slug][$name] = $val_id;
+                    }
+                }
+
+                if (!empty($val_ids)) {
+                    $attribute_lines[] = array(0, 0, array(
+                        'attribute_id' => $attr_id,
+                        'value_ids'    => array(array(6, 0, $val_ids)),
+                    ));
+                }
+            }
+
+            if (!empty($attribute_lines)) {
+                $product_data['attribute_line_ids'] = $attribute_lines;
             }
         }
 
@@ -2162,12 +2393,43 @@ class OdooFlow {
                     continue;
                 }
 
+                $attribute_value_ids = array();
+                $ptav_ids = array();
+                foreach ($variation->get_attributes() as $key => $val_slug) {
+                    $slug = str_replace('attribute_', '', $key);
+                    $name = $val_slug;
+                    if (taxonomy_exists($slug)) {
+                        $term = get_term_by('slug', $val_slug, $slug);
+                        if ($term) {
+                            $name = $term->name;
+                        }
+                    }
+                    if (isset($attribute_value_map[$slug][$name])) {
+                        $attribute_value_ids[] = $attribute_value_map[$slug][$name];
+                    } else {
+                        $attr_id = $attribute_map[$slug] ?? $this->get_odoo_attribute_id(wc_attribute_label($slug), $odoo_url, $database, $uid, $api_key);
+                        $val_id = $this->get_odoo_attribute_value_id($attr_id, $name, $odoo_url, $database, $uid, $api_key);
+                        if ($val_id) {
+                            $attribute_value_map[$slug][$name] = $val_id;
+                            $attribute_value_ids[] = $val_id;
+                        }
+                    }
+                }
+
+                foreach ($attribute_value_ids as $val_id) {
+                    $ptav = $this->get_odoo_template_attribute_value_id($odoo_id, $val_id, $odoo_url, $database, $uid, $api_key);
+                    if ($ptav) {
+                        $ptav_ids[] = $ptav;
+                    }
+                }
+
                 $v_data = array(
                     'name' => $variation->get_name(),
                     'default_code' => $variation->get_sku(),
                     'list_price' => $variation->get_regular_price(),
                     'product_tmpl_id' => $odoo_id,
-                    'categ_id' => 1
+                    'categ_id' => 1,
+                    'product_template_attribute_value_ids' => array(array(6, 0, $ptav_ids))
                 );
 
                 if (!empty($secondary_odoo_ids)) {
