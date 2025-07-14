@@ -41,6 +41,25 @@ class OdooFlow {
      */
     protected static $_instance = null;
 
+    /** @var array Cache for Odoo category IDs by name */
+    protected $category_cache = array();
+
+    /** @var array Cache for Odoo attribute IDs by name */
+    protected $attribute_cache = array();
+
+    /** @var array Cache for Odoo attribute value IDs */
+    protected $attribute_value_cache = array();
+
+    /** @var array Cache for product.template.attribute.value IDs */
+    protected $ptav_cache = array();
+
+    /**
+     * Helper to encode XML-RPC requests in UTF-8
+     */
+    private function xmlrpc_encode_utf8($method, $params) {
+        return xmlrpc_encode_request($method, $params, array('encoding' => 'UTF-8'));
+    }
+
     /**
      * Main OdooFlow Instance
      * 
@@ -308,7 +327,7 @@ class OdooFlow {
         }
 
         // First authenticate to get the user ID
-        $auth_request = xmlrpc_encode_request('authenticate', array(
+        $auth_request = $this->xmlrpc_encode_utf8('authenticate', array(
             $database,
             $username,
             $api_key,
@@ -1108,7 +1127,7 @@ class OdooFlow {
         error_log('OdooFlow: Final fields list - ' . print_r($selected_fields, true));
 
         // First authenticate to get the user ID
-        $auth_request = xmlrpc_encode_request('authenticate', array(
+        $auth_request = $this->xmlrpc_encode_utf8('authenticate', array(
             $database,
             $username,
             $api_key,
@@ -1433,7 +1452,7 @@ class OdooFlow {
         error_log('Selected fields: ' . print_r($selected_fields, true));
 
         // First authenticate to get the user ID
-        $auth_request = xmlrpc_encode_request('authenticate', array(
+        $auth_request = $this->xmlrpc_encode_utf8('authenticate', array(
             $database,
             $username,
             $api_key,
@@ -1881,6 +1900,259 @@ class OdooFlow {
     }
 
     /**
+     * Get (or create) a product category in Odoo and return its ID
+     */
+    private function get_odoo_category_id($name, $odoo_url, $database, $uid, $api_key) {
+        if (isset($this->category_cache[$name])) {
+            return $this->category_cache[$name];
+        }
+
+        $object_ep = rtrim($odoo_url, '/') . '/xmlrpc/2/object';
+
+        // Search category by name
+        $search_req = $this->xmlrpc_encode_utf8('execute_kw', array(
+            $database,
+            $uid,
+            $api_key,
+            'product.category',
+            'search',
+            array(array(array('name', '=', $name))),
+            0,
+            1
+        ));
+
+        $search_resp = wp_remote_post($object_ep, [
+            'body' => $search_req,
+            'headers' => ['Content-Type' => 'text/xml'],
+            'timeout' => 30,
+            'sslverify' => false
+        ]);
+
+        $ids = is_wp_error($search_resp) ? array() : xmlrpc_decode(wp_remote_retrieve_body($search_resp));
+        $cat_id = is_array($ids) && !empty($ids) ? $ids[0] : null;
+
+        if (!$cat_id) {
+            $create_req = $this->xmlrpc_encode_utf8('execute_kw', array(
+                $database,
+                $uid,
+                $api_key,
+                'product.category',
+                'create',
+                array(array('name' => $name, 'parent_id' => 1))
+            ));
+
+            $create_resp = wp_remote_post($object_ep, [
+                'body' => $create_req,
+                'headers' => ['Content-Type' => 'text/xml'],
+                'timeout' => 30,
+                'sslverify' => false
+            ]);
+
+            $cat_id = is_wp_error($create_resp) ? null : xmlrpc_decode(wp_remote_retrieve_body($create_resp));
+            if (!is_numeric($cat_id)) {
+                $cat_id = null;
+            }
+        }
+
+        if ($cat_id) {
+            $this->category_cache[$name] = $cat_id;
+        }
+
+        return $cat_id;
+    }
+
+    /**
+     * Get (or create) an attribute in Odoo and return its ID
+     */
+    private function get_odoo_attribute_id($name, $odoo_url, $database, $uid, $api_key) {
+        if (isset($this->attribute_cache[$name])) {
+            return $this->attribute_cache[$name];
+        }
+
+        $object_ep = rtrim($odoo_url, '/') . '/xmlrpc/2/object';
+
+        $search_req = $this->xmlrpc_encode_utf8('execute_kw', array(
+            $database,
+            $uid,
+            $api_key,
+            'product.attribute',
+            'search',
+            array(array(array('name', '=', $name))),
+            0,
+            1
+        ));
+
+        $resp = wp_remote_post($object_ep, [
+            'body' => $search_req,
+            'headers' => ['Content-Type' => 'text/xml'],
+            'timeout' => 30,
+            'sslverify' => false
+        ]);
+
+        $ids = is_wp_error($resp) ? array() : xmlrpc_decode(wp_remote_retrieve_body($resp));
+        $attr_id = is_array($ids) && !empty($ids) ? $ids[0] : null;
+
+        if (!$attr_id) {
+            $create_req = $this->xmlrpc_encode_utf8('execute_kw', array(
+                $database,
+                $uid,
+                $api_key,
+                'product.attribute',
+                'create',
+                array(array('name' => $name))
+            ));
+
+            $create_resp = wp_remote_post($object_ep, [
+                'body' => $create_req,
+                'headers' => ['Content-Type' => 'text/xml'],
+                'timeout' => 30,
+                'sslverify' => false
+            ]);
+
+            $attr_id = is_wp_error($create_resp) ? null : xmlrpc_decode(wp_remote_retrieve_body($create_resp));
+            if (!is_numeric($attr_id)) {
+                $attr_id = null;
+            }
+        }
+
+        if ($attr_id) {
+            $this->attribute_cache[$name] = $attr_id;
+        }
+
+        return $attr_id;
+    }
+
+    /**
+     * Get (or create) an attribute value in Odoo and return its ID
+     */
+    private function get_odoo_attribute_value_id($attribute_id, $name, $odoo_url, $database, $uid, $api_key) {
+        $cache_key = $attribute_id . ':' . $name;
+        if (isset($this->attribute_value_cache[$cache_key])) {
+            return $this->attribute_value_cache[$cache_key];
+        }
+
+        $object_ep = rtrim($odoo_url, '/') . '/xmlrpc/2/object';
+
+        $search_req = $this->xmlrpc_encode_utf8('execute_kw', array(
+            $database,
+            $uid,
+            $api_key,
+            'product.attribute.value',
+            'search',
+            array(array(array('name', '=', $name), array('attribute_id', '=', $attribute_id))),
+            0,
+            1
+        ));
+
+        $resp = wp_remote_post($object_ep, [
+            'body' => $search_req,
+            'headers' => ['Content-Type' => 'text/xml'],
+            'timeout' => 30,
+            'sslverify' => false
+        ]);
+
+        $ids = is_wp_error($resp) ? array() : xmlrpc_decode(wp_remote_retrieve_body($resp));
+        $val_id = is_array($ids) && !empty($ids) ? $ids[0] : null;
+
+        if (!$val_id) {
+            $create_req = $this->xmlrpc_encode_utf8('execute_kw', array(
+                $database,
+                $uid,
+                $api_key,
+                'product.attribute.value',
+                'create',
+                array(array('name' => $name, 'attribute_id' => $attribute_id))
+            ));
+
+            $create_resp = wp_remote_post($object_ep, [
+                'body' => $create_req,
+                'headers' => ['Content-Type' => 'text/xml'],
+                'timeout' => 30,
+                'sslverify' => false
+            ]);
+
+            $val_id = is_wp_error($create_resp) ? null : xmlrpc_decode(wp_remote_retrieve_body($create_resp));
+            if (!is_numeric($val_id)) {
+                $val_id = null;
+            }
+        }
+
+        if ($val_id) {
+            $this->attribute_value_cache[$cache_key] = $val_id;
+        }
+
+        return $val_id;
+    }
+
+    /**
+     * Get (or create) a product.template.attribute.value ID
+     */
+    private function get_odoo_ptav_id($template_id, $attribute_id, $value_id, $odoo_url, $database, $uid, $api_key) {
+        $cache_key = $template_id . ':' . $attribute_id . ':' . $value_id;
+        if (isset($this->ptav_cache[$cache_key])) {
+            return $this->ptav_cache[$cache_key];
+        }
+
+        $object_ep = rtrim($odoo_url, '/') . '/xmlrpc/2/object';
+
+        $search_req = $this->xmlrpc_encode_utf8('execute_kw', array(
+            $database,
+            $uid,
+            $api_key,
+            'product.template.attribute.value',
+            'search_read',
+            array(array(
+                array('product_tmpl_id', '=', $template_id),
+                array('product_attribute_value_id', '=', $value_id)
+            )),
+            array('fields' => array('id'), 'limit' => 1)
+        ));
+
+        $resp = wp_remote_post($object_ep, [
+            'body' => $search_req,
+            'headers' => ['Content-Type' => 'text/xml'],
+            'timeout' => 30,
+            'sslverify' => false
+        ]);
+
+        $rows = is_wp_error($resp) ? array() : xmlrpc_decode(wp_remote_retrieve_body($resp));
+        $ptav_id = (is_array($rows) && !empty($rows)) ? $rows[0]['id'] : null;
+
+        if (!$ptav_id) {
+            $create_req = $this->xmlrpc_encode_utf8('execute_kw', array(
+                $database,
+                $uid,
+                $api_key,
+                'product.template.attribute.value',
+                'create',
+                array(array(
+                    'product_tmpl_id' => $template_id,
+                    'attribute_id' => $attribute_id,
+                    'product_attribute_value_id' => $value_id
+                ))
+            ));
+
+            $create_resp = wp_remote_post($object_ep, [
+                'body' => $create_req,
+                'headers' => ['Content-Type' => 'text/xml'],
+                'timeout' => 30,
+                'sslverify' => false
+            ]);
+
+            $ptav_id = is_wp_error($create_resp) ? null : xmlrpc_decode(wp_remote_retrieve_body($create_resp));
+            if (!is_numeric($ptav_id)) {
+                $ptav_id = null;
+            }
+        }
+
+        if ($ptav_id) {
+            $this->ptav_cache[$cache_key] = $ptav_id;
+        }
+
+        return $ptav_id;
+    }
+
+    /**
      * Export a single product to Odoo
      */
     private function export_product_to_odoo($product, $selected_fields) {
@@ -1894,7 +2166,7 @@ class OdooFlow {
         }
 
         // First authenticate to get the user ID
-        $auth_request = xmlrpc_encode_request('authenticate', array(
+        $auth_request = $this->xmlrpc_encode_utf8('authenticate', array(
             $database,
             $username,
             $api_key,
@@ -1949,12 +2221,115 @@ class OdooFlow {
             $product_data['weight'] = $product->get_weight();
         }
 
+        // --- Categories ---
+        $product_data['categ_id'] = 1;
+        $terms = get_the_terms($product->get_id(), 'product_cat');
+        $secondary_odoo_ids = array();
+        if ($terms && !is_wp_error($terms)) {
+            foreach ($terms as $term) {
+                if ($term->parent == 0) {
+                    continue; // Skip WooCommerce root category
+                }
+                $cid = $this->get_odoo_category_id($term->name, $odoo_url, $database, $uid, $api_key);
+                if ($cid && $cid != 1) {
+                    $secondary_odoo_ids[] = $cid;
+                }
+            }
+        }
+        if (!empty($secondary_odoo_ids)) {
+            $product_data['categ_ids'] = array(array(6, 0, $secondary_odoo_ids));
+        }
+
+        // --- Attributes for variable products ---
+        $attr_value_map = array();
+        if ($product->is_type('variable')) {
+            $attributes = $product->get_attributes();
+            $attribute_lines = array();
+
+            foreach ($attributes as $attr) {
+                if (!$attr->get_variation()) {
+                    continue;
+                }
+
+                $attr_label = wc_attribute_label($attr->get_name());
+                $attr_id = $this->get_odoo_attribute_id($attr_label, $odoo_url, $database, $uid, $api_key);
+                if (!$attr_id) {
+                    continue;
+                }
+
+                $options = $attr->get_options();
+                $value_ids = array();
+
+                foreach ($options as $opt) {
+                    if ($attr->is_taxonomy()) {
+                        $term = get_term_by('slug', $opt, $attr->get_name());
+                        $opt_name = $term ? $term->name : $opt;
+                        $map_key = $opt;
+                    } else {
+                        $opt_name = $opt;
+                        $map_key = $opt;
+                    }
+
+                    $val_id = $this->get_odoo_attribute_value_id($attr_id, $opt_name, $odoo_url, $database, $uid, $api_key);
+                    if ($val_id) {
+                        $value_ids[] = $val_id;
+                        $attr_value_map[$attr->get_name()][$map_key] = array(
+                            'attr_id' => $attr_id,
+                            'val_id'  => $val_id
+                        );
+                    }
+                }
+
+                if (!empty($value_ids)) {
+                    $attribute_lines[] = array(0, 0, array(
+                        'attribute_id' => $attr_id,
+                        'value_ids'    => array(array(6, 0, $value_ids))
+                    ));
+                }
+            }
+
+            if (!empty($attribute_lines)) {
+                $product_data['attribute_line_ids'] = $attribute_lines;
+            }
+
+            if (empty($product_data['list_price'])) {
+                $min_price = null;
+                foreach ($product->get_children() as $child_id) {
+                    $v = wc_get_product($child_id);
+                    if ($v) {
+                        $p = floatval($v->get_regular_price());
+                        if ($p > 0 && ($min_price === null || $p < $min_price)) {
+                            $min_price = $p;
+                        }
+                    }
+                }
+                if ($min_price !== null) {
+                    $product_data['list_price'] = $min_price;
+                }
+            }
+        }
+
+        // --- Image ---
+        $img_id = $product->get_image_id();
+        if ($img_id) {
+            $img_url = wp_get_attachment_url($img_id);
+            if ($img_url) {
+                $img_resp = wp_remote_get($img_url, array('timeout' => 30));
+                if (!is_wp_error($img_resp)) {
+                    $img_body = wp_remote_retrieve_body($img_resp);
+                    if ($img_body !== '') {
+                        $product_data['image_1920'] = base64_encode($img_body);
+                    }
+                }
+            }
+        }
+
         // Get stored Odoo ID if exists
         $stored_odoo_id = get_post_meta($product->get_id(), '_odoo_product_id', true);
         $created = false;
 
         // Check if product exists in Odoo by SKU
-        $search_request = xmlrpc_encode_request('execute_kw', array(
+        $search_request = $this->xmlrpc_encode_utf8('execute_kw', array(
             $database,
             $uid,
             $api_key,
@@ -1987,7 +2362,7 @@ class OdooFlow {
             $odoo_id = $search_result[0]['id'];
             
             // Update existing product
-            $update_request = xmlrpc_encode_request('execute_kw', array(
+            $update_request = $this->xmlrpc_encode_utf8('execute_kw', array(
                 $database,
                 $uid,
                 $api_key,
@@ -2013,7 +2388,7 @@ class OdooFlow {
             }
         } else {
             // Create new product
-            $create_request = xmlrpc_encode_request('execute_kw', array(
+            $create_request = $this->xmlrpc_encode_utf8('execute_kw', array(
                 $database,
                 $uid,
                 $api_key,
@@ -2045,6 +2420,132 @@ class OdooFlow {
         // Update the stored Odoo ID in WooCommerce
         if ($odoo_id) {
             update_post_meta($product->get_id(), '_odoo_product_id', $odoo_id);
+        }
+
+        // Handle variable product variations
+        if ($odoo_id && $product->is_type('variable')) {
+            $variation_ids = $product->get_children();
+            foreach ($variation_ids as $variation_id) {
+                $variation = wc_get_product($variation_id);
+                if (!$variation) {
+                    continue;
+                }
+
+                $v_data = array(
+                    'name' => $variation->get_name(),
+                    'default_code' => $variation->get_sku(),
+                    'list_price' => $variation->get_regular_price(),
+                    'product_tmpl_id' => $odoo_id,
+                    'categ_id' => 1
+                );
+
+                $var_attrs = $variation->get_attributes();
+                $ptav_ids = array();
+                foreach ($var_attrs as $attr_slug => $val_slug) {
+                    $attr_id = null;
+                    $val_id = null;
+                    if (isset($attr_value_map[$attr_slug][$val_slug])) {
+                        $attr_id = $attr_value_map[$attr_slug][$val_slug]['attr_id'];
+                        $val_id  = $attr_value_map[$attr_slug][$val_slug]['val_id'];
+                    } else {
+                        $label = wc_attribute_label($attr_slug);
+                        $attr_id = $this->get_odoo_attribute_id($label, $odoo_url, $database, $uid, $api_key);
+                        if ($attr_id) {
+                            if (taxonomy_exists($attr_slug)) {
+                                $term = get_term_by('slug', $val_slug, $attr_slug);
+                                $vname = $term ? $term->name : $val_slug;
+                            } else {
+                                $vname = $val_slug;
+                            }
+                            $val_id = $this->get_odoo_attribute_value_id($attr_id, $vname, $odoo_url, $database, $uid, $api_key);
+                        }
+                    }
+
+                    if ($attr_id && $val_id) {
+                        $ptav = $this->get_odoo_ptav_id($odoo_id, $attr_id, $val_id, $odoo_url, $database, $uid, $api_key);
+                        if ($ptav) {
+                            $ptav_ids[] = $ptav;
+                        }
+                    }
+                }
+                if (!empty($ptav_ids)) {
+                    $v_data['product_template_attribute_value_ids'] = array(array(6, 0, $ptav_ids));
+                }
+
+                if (!empty($secondary_odoo_ids)) {
+                    $v_data['categ_ids'] = array(array(6, 0, $secondary_odoo_ids));
+                }
+
+                $v_img_id = $variation->get_image_id() ? $variation->get_image_id() : $img_id;
+                if ($v_img_id) {
+                    $v_img_url = wp_get_attachment_url($v_img_id);
+                    if ($v_img_url) {
+                        $v_resp = wp_remote_get($v_img_url, array('timeout' => 30));
+                        if (!is_wp_error($v_resp)) {
+                            $v_body = wp_remote_retrieve_body($v_resp);
+                            if ($v_body !== '') {
+                                $v_data['image_1920'] = base64_encode($v_body);
+                            }
+                        }
+                    }
+                }
+
+                if ($variation->get_sku()) {
+                    $v_search_req = $this->xmlrpc_encode_utf8('execute_kw', array(
+                        $database,
+                        $uid,
+                        $api_key,
+                        'product.product',
+                        'search_read',
+                        array(array(array('default_code', '=', $variation->get_sku()))),
+                        array('fields' => array('id'))
+                    ));
+
+                    $v_search_resp = wp_remote_post(rtrim($odoo_url, '/') . '/xmlrpc/2/object', [
+                        'body' => $v_search_req,
+                        'headers' => ['Content-Type' => 'text/xml'],
+                        'timeout' => 30,
+                        'sslverify' => false
+                    ]);
+
+                    $v_search = is_wp_error($v_search_resp) ? array() : xmlrpc_decode(wp_remote_retrieve_body($v_search_resp));
+                    if (is_array($v_search) && !empty($v_search)) {
+                        $v_id = $v_search[0]['id'];
+                        unset($v_data['product_tmpl_id']);
+                        $v_update_req = $this->xmlrpc_encode_utf8('execute_kw', array(
+                            $database,
+                            $uid,
+                            $api_key,
+                            'product.product',
+                            'write',
+                            array(array($v_id), $v_data)
+                        ));
+
+                        wp_remote_post(rtrim($odoo_url, '/') . '/xmlrpc/2/object', [
+                            'body' => $v_update_req,
+                            'headers' => ['Content-Type' => 'text/xml'],
+                            'timeout' => 30,
+                            'sslverify' => false
+                        ]);
+                    } else {
+                        $v_create_req = $this->xmlrpc_encode_utf8('execute_kw', array(
+                            $database,
+                            $uid,
+                            $api_key,
+                            'product.product',
+                            'create',
+                            array($v_data)
+                        ));
+
+                        wp_remote_post(rtrim($odoo_url, '/') . '/xmlrpc/2/object', [
+                            'body' => $v_create_req,
+                            'headers' => ['Content-Type' => 'text/xml'],
+                            'timeout' => 30,
+                            'sslverify' => false
+                        ]);
+                    }
+                }
+            }
         }
 
         return array(
