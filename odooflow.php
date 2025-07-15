@@ -3550,10 +3550,106 @@ class OdooFlow {
      * Create product in Odoo
      */
     private function create_odoo_product($product_data) {
-        // Implementation for creating product in Odoo
-        // This would use the XML-RPC API to create a product
-        // Return the Odoo product ID or WP_Error
-        return 0; // Placeholder
+        $odoo_url = get_option('odooflow_odoo_url', '');
+        $username = get_option('odooflow_username', '');
+        $api_key  = get_option('odooflow_api_key', '');
+        $database = get_option('odooflow_database', '');
+
+        if (empty($odoo_url) || empty($username) || empty($api_key) || empty($database)) {
+            return new WP_Error('missing_credentials', __('Odoo connection settings are incomplete.', 'odooflow'));
+        }
+
+        $uid = $this->authenticate_odoo($odoo_url, $database, $username, $api_key);
+        if (is_wp_error($uid)) {
+            return $uid;
+        }
+
+        // Try to find existing product by SKU
+        $sku = $product_data['default_code'] ?? '';
+        $object_endpoint = rtrim($odoo_url, '/') . '/xmlrpc/2/object';
+
+        if ($sku !== '') {
+            $search_request = $this->xmlrpc_encode_utf8('execute_kw', array(
+                $database,
+                $uid,
+                $api_key,
+                'product.template',
+                'search_read',
+                array(array(array('default_code', '=', $sku))),
+                array('fields' => array('id'))
+            ));
+
+            $search_response = wp_remote_post($object_endpoint, [
+                'body'      => $search_request,
+                'headers'   => ['Content-Type' => 'text/xml'],
+                'timeout'   => 30,
+                'sslverify' => false,
+            ]);
+
+            if (is_wp_error($search_response)) {
+                return new WP_Error('search_error', __('Error searching for product in Odoo.', 'odooflow'));
+            }
+
+            $search_result = xmlrpc_decode(wp_remote_retrieve_body($search_response));
+
+            if (is_array($search_result) && !empty($search_result)) {
+                $odoo_id = (int) $search_result[0]['id'];
+                $update_request = $this->xmlrpc_encode_utf8('execute_kw', array(
+                    $database,
+                    $uid,
+                    $api_key,
+                    'product.template',
+                    'write',
+                    array(array($odoo_id), $product_data),
+                ));
+
+                $update_response = wp_remote_post($object_endpoint, [
+                    'body'      => $update_request,
+                    'headers'   => ['Content-Type' => 'text/xml'],
+                    'timeout'   => 30,
+                    'sslverify' => false,
+                ]);
+
+                if (is_wp_error($update_response)) {
+                    return new WP_Error('update_error', __('Error updating product in Odoo.', 'odooflow'));
+                }
+
+                $update_result = xmlrpc_decode(wp_remote_retrieve_body($update_response));
+                if (!$update_result) {
+                    return new WP_Error('update_failed', __('Failed to update product in Odoo.', 'odooflow'));
+                }
+
+                return $odoo_id;
+            }
+        }
+
+        // Create new product if not found
+        $create_request = $this->xmlrpc_encode_utf8('execute_kw', array(
+            $database,
+            $uid,
+            $api_key,
+            'product.template',
+            'create',
+            array($product_data),
+        ));
+
+        $create_response = wp_remote_post($object_endpoint, [
+            'body'      => $create_request,
+            'headers'   => ['Content-Type' => 'text/xml'],
+            'timeout'   => 30,
+            'sslverify' => false,
+        ]);
+
+        if (is_wp_error($create_response)) {
+            return new WP_Error('create_error', __('Error creating product in Odoo.', 'odooflow'));
+        }
+
+        $create_result = xmlrpc_decode(wp_remote_retrieve_body($create_response));
+        if (!is_numeric($create_result)) {
+            return new WP_Error('create_failed', __('Failed to create product in Odoo.', 'odooflow'));
+        }
+
+        return (int) $create_result;
     }
 
     /**
@@ -3635,10 +3731,97 @@ class OdooFlow {
      * Create customer in Odoo
      */
     private function create_odoo_customer($customer_data) {
-        // Implementation for creating customer in Odoo
-        // This would use the XML-RPC API to create a customer
-        // Return the Odoo customer ID or WP_Error
-        return 0; // Placeholder
+        $odoo_url = get_option('odooflow_odoo_url', '');
+        $username = get_option('odooflow_username', '');
+        $api_key  = get_option('odooflow_api_key', '');
+        $database = get_option('odooflow_database', '');
+
+        if (empty($odoo_url) || empty($username) || empty($api_key) || empty($database)) {
+            return new WP_Error('missing_credentials', __('Odoo connection settings are incomplete.', 'odooflow'));
+        }
+
+        $uid = $this->authenticate_odoo($odoo_url, $database, $username, $api_key);
+        if (is_wp_error($uid)) {
+            return $uid;
+        }
+
+        $email = $customer_data['email'] ?? '';
+        $object_endpoint = rtrim($odoo_url, '/') . '/xmlrpc/2/object';
+
+        if ($email !== '') {
+            $search_request = xmlrpc_encode_request('execute_kw', array(
+                $database,
+                $uid,
+                $api_key,
+                'res.partner',
+                'search',
+                array(array(array('email', '=', $email)))
+            ));
+
+            $search_response = wp_remote_post($object_endpoint, [
+                'body'      => $search_request,
+                'headers'   => ['Content-Type' => 'text/xml'],
+                'timeout'   => 30,
+                'sslverify' => false,
+            ]);
+
+            if (is_wp_error($search_response)) {
+                return new WP_Error('search_error', __('Error searching for customer in Odoo.', 'odooflow'));
+            }
+
+            $existing_ids = xmlrpc_decode(wp_remote_retrieve_body($search_response));
+            if (!empty($existing_ids)) {
+                $update_request = xmlrpc_encode_request('execute_kw', array(
+                    $database,
+                    $uid,
+                    $api_key,
+                    'res.partner',
+                    'write',
+                    array(array($existing_ids[0]), $customer_data)
+                ));
+
+                $update_response = wp_remote_post($object_endpoint, [
+                    'body'      => $update_request,
+                    'headers'   => ['Content-Type' => 'text/xml'],
+                    'timeout'   => 30,
+                    'sslverify' => false,
+                ]);
+
+                if (is_wp_error($update_response)) {
+                    return new WP_Error('update_error', __('Error updating customer in Odoo.', 'odooflow'));
+                }
+
+                return (int) $existing_ids[0];
+            }
+        }
+
+        // Create new customer
+        $create_request = xmlrpc_encode_request('execute_kw', array(
+            $database,
+            $uid,
+            $api_key,
+            'res.partner',
+            'create',
+            array($customer_data)
+        ));
+
+        $create_response = wp_remote_post($object_endpoint, [
+            'body'      => $create_request,
+            'headers'   => ['Content-Type' => 'text/xml'],
+            'timeout'   => 30,
+            'sslverify' => false,
+        ]);
+
+        if (is_wp_error($create_response)) {
+            return new WP_Error('create_error', __('Error creating customer in Odoo.', 'odooflow'));
+        }
+
+        $odoo_id = xmlrpc_decode(wp_remote_retrieve_body($create_response));
+        if (!is_numeric($odoo_id)) {
+            return new WP_Error('create_failed', __('Failed to create customer in Odoo.', 'odooflow'));
+        }
+
+        return (int) $odoo_id;
     }
 
     /**
