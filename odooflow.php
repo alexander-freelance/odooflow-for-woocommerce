@@ -1734,11 +1734,15 @@ class OdooFlow {
             return;
         }
 
+        $page     = isset($_POST['page']) ? max(1, intval($_POST['page'])) : 1;
+        $per_page = 50;
+
         // Query WooCommerce products
         $args = array(
-            'post_type' => 'product',
-            'post_status' => 'publish',
-            'posts_per_page' => 100,
+            'post_type'      => 'product',
+            'post_status'    => 'publish',
+            'posts_per_page' => $per_page,
+            'paged'          => $page,
         );
 
         $products_query = new WP_Query($args);
@@ -1777,19 +1781,13 @@ class OdooFlow {
         }
 
         // Build the HTML for the products list
-        $html = '<table class="wp-list-table widefat fixed striped products-list">';
-        $html .= '<thead><tr>';
-        $html .= '<th class="check-column"><input type="checkbox" id="select-all-woo-products"><label for="select-all-woo-products"></label></th>';
-        $html .= '<th>' . __('Product Name', 'odooflow') . '</th>';
-        $html .= '<th>' . __('SKU', 'odooflow') . '</th>';
-        $html .= '<th>' . __('Price', 'odooflow') . '</th>';
-        $html .= '</tr></thead><tbody>';
+        $rows = '';
 
         if (empty($products)) {
-            $html .= '<tr><td colspan="4">' . __('No products found.', 'odooflow') . '</td></tr>';
+            $rows .= '<tr><td colspan="4">' . __('No products found.', 'odooflow') . '</td></tr>';
         } else {
             foreach ($products as $product) {
-                $html .= sprintf(
+                $rows .= sprintf(
                     '<tr data-product-type="%5$s">
                         <td class="check-column">
                             <input type="checkbox" name="export_products[]" id="product-%1$s" value="%1$s">
@@ -1808,10 +1806,24 @@ class OdooFlow {
             }
         }
 
-        $html .= '</tbody></table>';
+        $has_more = ($page < $products_query->max_num_pages);
+
+        if ($page === 1) {
+            $html  = '<table class="wp-list-table widefat fixed striped products-list">';
+            $html .= '<thead><tr>';
+            $html .= '<th class="check-column"><input type="checkbox" id="select-all-woo-products"><label for="select-all-woo-products"></label></th>';
+            $html .= '<th>' . __('Product Name', 'odooflow') . '</th>';
+            $html .= '<th>' . __('SKU', 'odooflow') . '</th>';
+            $html .= '<th>' . __('Price', 'odooflow') . '</th>';
+            $html .= '</tr></thead><tbody>';
+            $html .= $rows;
+            $html .= '</tbody></table>';
+        } else {
+            $html = $rows;
+        }
 
         error_log('Sending response with HTML table');
-        wp_send_json_success(array('html' => $html));
+        wp_send_json_success(array('html' => $html, 'has_more' => $has_more));
     }
 
     /**

@@ -634,4 +634,10 @@
 
 .radio-label input[type="radio"] {
     margin: 0;
-} 
+}
+
+/* Load more button for WooCommerce products */
+.woo-load-more-container {
+    text-align: center;
+    margin-top: 10px;
+}
