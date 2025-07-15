@@ -1,4 +1,7 @@
 jQuery(document).ready(function($) {
+    let wooCurrentPage = 1;
+    let wooHasMore = false;
+    let wooSelectedFields = [];
     // Handle manual database input toggle
     $('#manual_db').on('change', function() {
         const $wrapper = $('.database-select-container');
@@ -313,15 +316,15 @@ jQuery(document).ready(function($) {
         const loadingOverlay = $('<div class="loading-overlay"><div class="loading-spinner"></div></div>');
         wooProductsList.append(loadingOverlay);
         exportModal.show();
-        
-        // Get selected fields
-        const selectedFields = getSelectedExportFields();
-        
-        // Debug log the request data
+
+        wooCurrentPage = 1;
+        wooSelectedFields = getSelectedExportFields();
+
         const requestData = {
             action: 'get_woo_products',
             nonce: odooflow.nonce,
-            fields: selectedFields
+            fields: wooSelectedFields,
+            page: wooCurrentPage
         };
         console.log('Sending request with data:', requestData);
         
@@ -333,6 +336,9 @@ jQuery(document).ready(function($) {
                 console.log('Response:', response);
                 if (response.success) {
                     wooProductsList.html(response.data.html);
+                    wooHasMore = response.data.has_more;
+                    addWooLoadMore();
+                    toggleWooLoadMore();
                 } else {
                     const errorMessage = response.data ? response.data.message : 'Unknown error occurred';
                     wooProductsList.html('<div class="notice notice-error"><p>' + errorMessage + '</p></div>');
@@ -375,6 +381,9 @@ jQuery(document).ready(function($) {
     // Export modal close handler
     $('#odoo-export-modal .odoo-modal-close').on('click', function() {
         $('#odoo-export-modal').hide();
+        wooCurrentPage = 1;
+        wooHasMore = false;
+        toggleWooLoadMore();
     });
 
     // Export field selection handlers
@@ -399,6 +408,57 @@ jQuery(document).ready(function($) {
     $('.deselect-all-woo-products').on('click', function() {
         $('input[name="export_products[]"]').prop('checked', false);
         $('#select-all-woo-products').prop('checked', false);
+    });
+
+    function addWooLoadMore() {
+        if ($('.woo-load-more-container').length === 0) {
+            $('.woo-products-list').after('<div class="woo-load-more-container" style="text-align:center;margin-top:10px;"><button type="button" class="button load-more-woo-products">Load More</button></div>');
+        }
+    }
+
+    function toggleWooLoadMore() {
+        if (wooHasMore) {
+            $('.woo-load-more-container').show();
+        } else {
+            $('.woo-load-more-container').hide();
+        }
+    }
+
+    $(document).on('click', '.load-more-woo-products', function() {
+        const $button = $(this);
+        $button.prop('disabled', true);
+        const spinner = $('<span class="spinner is-active" style="float:none;margin-left:5px;"></span>');
+        $button.after(spinner);
+
+        const requestData = {
+            action: 'get_woo_products',
+            nonce: odooflow.nonce,
+            fields: wooSelectedFields,
+            page: wooCurrentPage + 1
+        };
+
+        $.ajax({
+            url: odooflow.ajax_url,
+            type: 'POST',
+            data: requestData,
+            success: function(response) {
+                if (response.success) {
+                    wooCurrentPage += 1;
+                    $('.woo-products-list table tbody').append(response.data.html);
+                    wooHasMore = response.data.has_more;
+                    toggleWooLoadMore();
+                } else {
+                    alert(response.data ? response.data.message : 'Unknown error');
+                }
+            },
+            error: function() {
+                alert('Error loading more products.');
+            },
+            complete: function() {
+                spinner.remove();
+                $button.prop('disabled', false);
+            }
+        });
     });
     
     // Export selected products
